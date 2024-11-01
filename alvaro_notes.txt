@@ -1,0 +1,12 @@
+Start interactive gpu session
+srun --account=mihalcea98 --partition=spgpu --gres=gpu:1 --time=2:00:00 --mem-per-cpu=32000m --job-name="CS" --pty bash
+#
+srun --nodelist=gl1525 --account=mihalcea98 --partition=spgpu --gres=gpu:1 --time=2:00:00 --mem-per-cpu=32000m --pty bash
+
+conda create -n climsim_env python=3.11 -y
+# cd to CLimSim
+pip install .
+
+module load cuda/12.3.0
+
+module load cudnn/12.3-v8.9.6
