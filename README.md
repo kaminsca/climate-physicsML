@@ -15,7 +15,7 @@ To copy the data into the local_path (Clark's might be different because it migh
 ### 1. Start interactive gpu session
 For CSE598_002 account:
 
-`srun --account=cse598s002f24_class --partition=standard --time=2:00:00 --ntasks=1 --cpus-per-task=16 --mem=32G --job-name="CS" --pty bash`
+`srun --account=cse598s002f24_class --partition=standard --time=1:00:00 --ntasks=1 --cpus-per-task=16 --mem=32G --job-name="CS" --pty bash`
 
 `srun --account=cse598s002f24_class --partition=spgpu --gres=gpu:1 --time=2:00:00 --mem-per-cpu=32000m --job-name="CS" --pty bash`
 
@@ -34,6 +34,8 @@ For Mihalcea Lab's account with GPU:
 `pip install .`
 
 `pip install jupyter notebook ipykernel nbformat jupyter_core`
+
+`pip install nvidia-modulus torch` # for ecMLP
 
 
 ### 3. GreatLakes modules
@@ -57,11 +59,11 @@ e.g.: gl1512
 
 MYPORT=$(($(($RANDOM % 10000))+49152)); echo $MYPORT
 e.g.:
-49941
+51218
 
 `jupyter notebook --no-browser --port=<MYPORT> --ip=0.0.0.0`
 e.g.:
-`jupyter notebook --no-browser --port=49941 --ip=0.0.0.0`
+`jupyter notebook --no-browser --port=51218 --ip=0.0.0.0`
 
 
 `jupyter-notebook --no-browser --port=49941 --ip=0.0.0.0`

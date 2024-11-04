@@ -8,7 +8,7 @@ from climsim_utils.data_utils import *
 from climsim_datapip import climsim_dataset
 from climsim_datapip_h5 import climsim_dataset_h5
 from tqdm import tqdm
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import numpy as np
 from loss_energy import loss_energy
 from mlp import MLP
@@ -19,7 +19,7 @@ class Config:
     epochs: int = 50
     batch_size: int = 1024
     learning_rate: float = 0.0001
-    mlp_hidden_dims: list[int] = [256, 256, 256, 256, 256, 256, 256, 256, 256]
+    mlp_hidden_dims: list[int] = field(default_factory=lambda: [256, 256, 256, 256, 256, 256, 256, 256, 256])
     loss: str = 'mse'
     use_energy_loss: bool = True
     energy_loss_weight: float = 1.0
@@ -28,9 +28,11 @@ class Config:
     data_path: str = "/scratch/thore_root/thore0/alvarovh/large_data/cse598_project/subsampled_low_res/" # avh greatlakes
     val_input: str = 'val_input.npy'
     val_target: str = 'val_target.npy'
+    train_target: str = "train_target.npy"
+    train_input: str = "train_input.npy"
     qc_lbd: str = 'inputs/qc_exp_lambda_large.txt'
     qi_lbd: str = 'inputs/qi_exp_lambda_large.txt'    
-    CLIMSIM_REPO_PATH: str = "/home/alvarovh/code/cse598_climate_proj/ClimSim"
+    CLIMSIM_REPO_PATH: str = "/home/alvarovh/code/cse598_climate_proj/ClimSim/"
 
 
 cfg = Config()
@@ -52,19 +54,22 @@ data = data_utils(grid_info = grid_info,
                 input_max = input_max, 
                 input_min = input_min, 
                 output_scale = output_scale)
-data.set_to_v4_vars()
+data.set_to_v1_vars()
 input_size = data.input_feature_len
 output_size = data.target_feature_len
 input_sub, input_div, out_scale = data.save_norm(write=False)
 # Create dataset instances
 val_input_path = cfg.data_path + cfg.val_input
 val_target_path = cfg.data_path + cfg.val_target
+train_input_path = cfg.data_path + cfg.train_input
+train_target_path = cfg.data_path + cfg.train_target
+
 if not os.path.exists(cfg.data_path + cfg.val_input):
     raise ValueError('Validation input path does not exist')
 
 val_dataset = climsim_dataset(val_input_path, val_target_path, input_sub, input_div, out_scale, lbd_qc, lbd_qi)
 val_loader = DataLoader(val_dataset, batch_size=cfg.batch_size, shuffle=False, sampler=None)
-train_dataset = climsim_dataset_h5(cfg.data_path, input_sub, input_div, out_scale, lbd_qc, lbd_qi)
+train_dataset = climsim_dataset(train_input_path, train_target_path, input_sub, input_div, out_scale, lbd_qc, lbd_qi)
 train_loader = DataLoader(train_dataset, batch_size=cfg.batch_size, shuffle=False, sampler=None, drop_last=True, pin_memory=torch.cuda.is_available())
 
 
