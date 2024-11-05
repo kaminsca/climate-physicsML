@@ -1,0 +1,1 @@
+python download.py --data_path="/nfs/turbo/coe-mihalcea/alvarovh/climsim/climsim_lowres_0001-02" --regex "*train/0001-02/*" --log_file="download.log"
