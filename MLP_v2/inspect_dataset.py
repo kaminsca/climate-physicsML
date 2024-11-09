@@ -31,7 +31,7 @@ mlo_scale = xr.open_dataset(CLIMSIM_PATH + '/preprocessing/normalizations/output
 def load_nc_dir_with_generator(filelist:list):
     def gen():
         for file in filelist:
-            
+            print('1------------------------------------------------------')
             # read mli
             ds = xr.open_dataset(file, engine='netcdf4')
             ds = ds[vars_mli]
@@ -72,6 +72,7 @@ def load_nc_dir_with_generator(filelist:list):
             print("Shape of dso.values:", dso.values.shape)
             # print("Example of ds.values:", ds.values[:1])
             # print("Example of dso.values:", dso.values[:1])
+            print('2------------------------------------------------------')
             
             yield (ds.values, dso.values)
 
@@ -92,15 +93,16 @@ random.shuffle(f_mli)
 print(f'[TRAIN] Total # of input files: {len(f_mli)}')
 print(f'[TRAIN] Total # of columns (nfiles * ncols): {len(f_mli)*384}')
 tds = load_nc_dir_with_generator(f_mli)
+print('me too -----------------------------------------------')
 tds = tds.unbatch()
 tds = tds.shuffle(buffer_size=shuffle_buffer, reshuffle_each_iteration=True)
 tds = tds.prefetch(buffer_size=4) # in realtion to the batch size
 
-# iterator = iter(tds)
-# # Inspect a single batch from the dataset
-# x_batch, y_batch = next(iterator)
-# # Print the shapes and some example data
-# print("Shape of x_batch:", x_batch.shape)
-# print("Shape of y_batch:", y_batch.shape)
-# print("First example of x_batch:", x_batch[0])
-# print("First example of y_batch:", y_batch[0])
+iterator = iter(tds)
+# Inspect a single batch from the dataset
+x_batch, y_batch = next(iterator)
+# Print the shapes and some example data
+print("Shape of x_batch:", x_batch.shape)
+print("Shape of y_batch:", y_batch.shape)
+print("First example of x_batch:", x_batch[0])
+print("First example of y_batch:", y_batch[0])
