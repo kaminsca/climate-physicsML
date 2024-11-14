@@ -4,10 +4,13 @@ import random
 import tensorflow as tf
 import logging
 import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import pandas as pd
 
 # Configure logging
-logging.basicConfig(level=logging.DEBUG)
-# logging.basicConfig(level=logging.INFO)
+# logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 CLIMSIM_PATH = '/home/clarkkam/AIFS/ClimSim/'
@@ -145,51 +148,75 @@ print(x[124])
 #     pass
 # print(count_non_zero, 'non zero values in cam_out_SOLS / SOLSD / ... out of ', total)
 
-# # test energy loss
-# iterator = iter(tds)
-# counter = 0
-# variable_contributions = {
-#     'r_out': 0,
-#     'lh': 0,
-#     'sh': 0,
-#     'r_in' : 0,
-#     'SOLS' : 0,
-#     'SOLL' : 0,
-#     'SOLSD' : 0,
-#     'SOLLD' : 0
-# }
-# loss_sum = 0
-# try:
-#     while True:
-#         x, y = next(iterator)
-#         # r_out = upward longwave flux 
-#         # Surface latent heat flux (LH), and Surface sensible heat flux (SH)
-#         r_out = x[124]
-#         lh = x[122]
-#         sh = x[123]
-#         # r_in = visible direct flux + near-IR direct flux + visible diffuse flux + near-IR diffuse flux
-#         r_in = y[124] + y[125] + y[126] + y[127]
+# test energy loss
+iterator = iter(tds)
+counter = 0
+variable_contributions = {
+    'r_out': 0,
+    'lh': 0,
+    'sh': 0,
+    'r_in' : 0,
+    'SOLS' : 0,
+    'SOLL' : 0,
+    'SOLSD' : 0,
+    'SOLLD' : 0
+}
+variables = {
+    'r_out': 0,
+    'lh': 0,
+    'sh': 0,
+    'r_in' : 0,
+    'SOLS' : 0,
+    'SOLL' : 0,
+    'SOLSD' : 0,
+    'SOLLD' : 0
+}
+loss_sum = 0
+try:
+    while True:
+        x, y = next(iterator)
+        # r_out = upward longwave flux 
+        # Surface latent heat flux (LH), and Surface sensible heat flux (SH)
+        r_out = x[124]
+        lh = x[122]
+        sh = x[123]
+        # r_in = visible direct flux + near-IR direct flux + visible diffuse flux + near-IR diffuse flux
+        r_in = y[124] + y[125] + y[126] + y[127]
 
-#         variable_contributions['r_out'] += abs(r_out)
-#         variable_contributions['lh'] += abs(lh)
-#         variable_contributions['sh'] += abs(sh)
-#         variable_contributions['r_in'] += abs(r_in)
-#         variable_contributions['SOLS'] += abs(y[124])
-#         variable_contributions['SOLL'] += abs(y[125])
-#         variable_contributions['SOLSD'] += abs(y[126])
-#         variable_contributions['SOLLD'] += abs(y[127])
+        variable_contributions['r_out'] += abs(r_out)
+        variable_contributions['lh'] += abs(lh)
+        variable_contributions['sh'] += abs(sh)
+        variable_contributions['r_in'] += abs(r_in)
+        variable_contributions['SOLS'] += abs(y[124])
+        variable_contributions['SOLL'] += abs(y[125])
+        variable_contributions['SOLSD'] += abs(y[126])
+        variable_contributions['SOLLD'] += abs(y[127])
 
-#         # Lec = r_in − (r_out + lh + sh)
-#         loss_ec = r_in - (r_out + lh + sh)
-#         loss_sum += loss_ec
-#         # print(f"EC Loss[{counter}]: {loss_ec}")
-#         # print(f"        r_in = {r_in}, r_out = {r_out}, lh = {lh}, sh = {sh}")
-#         counter += 1
-# except StopIteration:
-#     pass
+        variables['r_out'] += r_out
+        variables['lh'] += lh
+        variables['sh'] += sh
+        variables['r_in'] += r_in
+        variables['SOLS'] += y[124]
+        variables['SOLL'] += y[125]
+        variables['SOLSD'] += y[126]
+        variables['SOLLD'] += y[127]
 
-# print(f"avg loss: {loss_sum / counter}")
-# average_contributions = {key: value / counter for key, value in variable_contributions.items()}
-# print("Average contributions to loss:")
-# for var, contrib in average_contributions.items():
-#     print(f"{var}: {contrib}")
+        # Lec = r_in − (r_out + lh + sh)
+        loss_ec = r_in - (r_out + lh + sh)
+        loss_sum += loss_ec
+        # print(f"EC Loss[{counter}]: {loss_ec}")
+        # print(f"        r_in = {r_in}, r_out = {r_out}, lh = {lh}, sh = {sh}")
+        counter += 1
+except StopIteration:
+    pass
+
+print(f"avg loss: {loss_sum / counter}")
+print("Average values:")
+avg_vars = {key: value / counter for key, value in variables.items()}
+for var, avg in avg_vars.items():
+    print(f"{var}: {avg}")
+
+average_contributions = {key: value / counter for key, value in variable_contributions.items()}
+print("Average contributions to loss:")
+for var, contrib in average_contributions.items():
+    print(f"{var}: {contrib}")
