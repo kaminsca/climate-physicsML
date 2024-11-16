@@ -48,11 +48,21 @@ def train_model(model, dataset, val_dataset, lambda_energy, optimizer, epochs, s
 
     best_val_mse = np.inf  # Initialize best validation MSE
 
+    # Batch-level logging file paths
+    train_batch_log_path = f"{output_results_dirpath}/batch_train_log_lambda_{lambda_energy}_datafrac_{data_subset_fraction}.csv"
+    val_batch_log_path = f"{output_results_dirpath}/batch_val_log_lambda_{lambda_energy}_datafrac_{data_subset_fraction}.csv"
+
+    # Create and initialize batch logging CSVs
+    with open(train_batch_log_path, "w") as f:
+        f.write("epoch,batch,loss,mae,mse,energy_loss\n")
+    with open(val_batch_log_path, "w") as f:
+        f.write("epoch,batch,loss,mae,mse,energy_loss\n")
+
     for epoch in range(epochs):
         print(f"\nEpoch {epoch + 1}/{epochs}")
         print("=" * 20)
 
-        # Initialize accumulators for metrics
+        # Initialize accumulators for epoch-level metrics
         epoch_loss = 0.0
         step_count = 0
 
@@ -62,7 +72,7 @@ def train_model(model, dataset, val_dataset, lambda_energy, optimizer, epochs, s
         train_energy_loss = 0.0
 
         # Training loop with tqdm
-        with tqdm(total=steps_per_epoch, desc=f"Epoch {epoch+1}", unit="step") as pbar:
+        with tqdm(total=steps_per_epoch, desc=f"Epoch {epoch+1} Training", unit="step") as pbar:
             for step, (x_batch_train, y_batch_train) in enumerate(dataset):
                 if step >= steps_per_epoch:
                     break
@@ -74,13 +84,20 @@ def train_model(model, dataset, val_dataset, lambda_energy, optimizer, epochs, s
                 grads = tape.gradient(loss_value, model.trainable_weights)
                 optimizer.apply_gradients(zip(grads, model.trainable_weights))
 
-                # Update and accumulate metrics
+                # Compute metrics for the batch
                 loss_value_scalar = loss_value.numpy()
-                epoch_loss += loss_value_scalar
                 energy_loss_value = tf.reduce_mean(energy_loss(x_batch_train, y_batch_train, y_pred)).numpy()
-                train_energy_loss += energy_loss_value
                 train_mae.update_state(y_batch_train, y_pred)
                 train_mse.update_state(y_batch_train, y_pred)
+
+                # Log batch metrics
+                with open(train_batch_log_path, "a") as f:
+                    f.write(f"{epoch + 1},{step + 1},{loss_value_scalar},{train_mae.result().numpy()},{train_mse.result().numpy()},{energy_loss_value}\n")
+
+                # Accumulate epoch-level metrics
+                epoch_loss += loss_value_scalar
+                train_energy_loss += energy_loss_value
+                step_count += 1
 
                 # Update tqdm progress bar
                 pbar.set_postfix({
@@ -90,8 +107,6 @@ def train_model(model, dataset, val_dataset, lambda_energy, optimizer, epochs, s
                     "MSE": f"{train_mse.result().numpy():.4f}",
                 })
                 pbar.update(1)
-
-                step_count += 1
 
         # Compute averages for the epoch
         avg_epoch_loss = epoch_loss / step_count
@@ -113,21 +128,26 @@ def train_model(model, dataset, val_dataset, lambda_energy, optimizer, epochs, s
         val_energy_loss = 0.0
         val_step_count = 0
 
-        # validation loop with tqdm
         print("Validation")
-        for step, (x_batch_val, y_batch_val) in tqdm(enumerate(val_dataset), total=validation_steps, desc="Validation", unit="step"):
-        # for step, (x_batch_val, y_batch_val) in enumerate(val_dataset):
+        with tqdm(total=validation_steps, desc=f"Epoch {epoch+1} Validation", unit="step") as pbar:
+            for step, (x_batch_val, y_batch_val) in enumerate(val_dataset):
+                if step >= validation_steps:
+                    break
+                y_val_pred = model(x_batch_val, training=False)
+                val_loss_value = combined_loss(x_batch_val, y_batch_val, y_val_pred, lambda_energy).numpy()
+                val_energy_loss_value = tf.reduce_mean(energy_loss(x_batch_val, y_batch_val, y_val_pred)).numpy()
+                val_mae.update_state(y_batch_val, y_val_pred)
+                val_mse.update_state(y_batch_val, y_val_pred)
 
-            if step >= validation_steps:
-                break
-            y_val_pred = model(x_batch_val, training=False)
-            val_loss_value = combined_loss(x_batch_val, y_batch_val, y_val_pred, lambda_energy).numpy()
-            val_loss += val_loss_value
-            val_energy_loss_value = tf.reduce_mean(energy_loss(x_batch_val, y_batch_val, y_val_pred)).numpy()
-            val_energy_loss += val_energy_loss_value
-            val_mae.update_state(y_batch_val, y_val_pred)
-            val_mse.update_state(y_batch_val, y_val_pred)
-            val_step_count += 1
+                # Log batch metrics for validation
+                with open(val_batch_log_path, "a") as f:
+                    f.write(f"{epoch + 1},{step + 1},{val_loss_value},{val_mae.result().numpy()},{val_mse.result().numpy()},{val_energy_loss_value}\n")
+
+                # Accumulate validation metrics
+                val_loss += val_loss_value
+                val_energy_loss += val_energy_loss_value
+                val_step_count += 1
+                pbar.update(1)
 
         # Calculate average validation metrics
         avg_val_loss = val_loss / val_step_count
@@ -139,7 +159,7 @@ def train_model(model, dataset, val_dataset, lambda_energy, optimizer, epochs, s
               f"MAE: {avg_val_mae:.4f}, MSE: {avg_val_mse:.4f}, "
               f"E. Loss: {avg_val_energy_loss:.4f}")
 
-        # Log all metrics to the CSV file
+        # Log epoch metrics to the epoch-level CSV
         with open(filepath_csv, "a") as f:
             f.write(f"{epoch + 1},{avg_epoch_loss},{avg_epoch_mae},{avg_epoch_mse},"
                     f"{avg_epoch_energy_loss},{avg_val_loss},{avg_val_mae},{avg_val_mse},"
@@ -153,6 +173,7 @@ def train_model(model, dataset, val_dataset, lambda_energy, optimizer, epochs, s
             print(f"Model saved at {model_save_path} with improved validation MSE: {best_val_mse:.4f}")
         else:
             print(f"No improvement in validation MSE: {avg_val_mse:.4f}")
+
 
 
 def calculate_dataset_size(file_list, vars_mli):
@@ -267,7 +288,7 @@ def main(LAMBDA_ENERGY, output_results_dirpath, data_subset_fraction, n_epochs):
     # Ensure Log directory exists
     os.makedirs(output_results_dirpath, exist_ok=True)
 
-    filepath_csv = f'{output_results_dirpath}/csv_logger_lambda_{LAMBDA_ENERGY}_datafrac_{data_subset_fraction}.txt'
+    filepath_csv = f'{output_results_dirpath}/csv_logger_lambda_{LAMBDA_ENERGY}_datafrac_{data_subset_fraction}.csv'
     with open(filepath_csv, "w") as f:
         # headers
         f.write("epoch,train_loss,train_mae,train_mse,train_energy_loss,"
@@ -436,7 +457,7 @@ def define_callbacks(output_results_dirpath, lambda_energy, data_subset_fraction
     )
 
     # CSV logger callback - Save logs specific to this combination
-    filepath_csv = f'{output_results_dirpath}/csv_logger_lambda_{lambda_energy}_datafrac_{data_subset_fraction}.txt'
+    filepath_csv = f'{output_results_dirpath}/csv_logger_lambda_{lambda_energy}_datafrac_{data_subset_fraction}.csv'
     csv_callback = keras.callbacks.CSVLogger(
         filepath_csv, separator=",", append=True
     )
