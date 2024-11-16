@@ -7,10 +7,13 @@ import random
 import pickle
 import os
 import math
+import tqdm
+from tqdm import tqdm
 
 import xarray as xr
 import numpy as np
 import matplotlib.pyplot as plt
+from sklearn.metrics import accuracy_score
 
 import tensorflow as tf
 from tensorflow import keras
@@ -18,10 +21,163 @@ from tensorflow import keras
 root_huggingface_data_dirpath = "/nfs/turbo/coe-mihalcea/alvarovh/climsim/climsim_all/"
 root_climsim_dirpath = "/home/alvarovh/code/cse598_climate_proj/ClimSim/"
 
+import tensorflow as tf
+from tensorflow import keras
+import numpy as np
+
+def energy_loss(x, y_true, y_pred):
+    r_out = x[:, 124]  # cam_in_lwup
+    lh = x[:, 122]     # pbuf_lhflx
+    sh = x[:, 123]     # pbuf_shflx
+    r_in = tf.reduce_sum(y_true[:, 124:128], axis=1)
+    loss_ec = r_in - (r_out + lh + sh)
+    return tf.reduce_mean(tf.abs(loss_ec))
+
+def combined_loss(x, y_true, y_pred, lambda_energy):
+    mse = tf.keras.losses.MeanSquaredError()
+    mse_loss = mse(y_true, y_pred)
+    weighted_energy_loss = lambda_energy * energy_loss(x, y_true, y_pred)
+    return mse_loss + weighted_energy_loss
+
+def train_model(model, dataset, val_dataset, lambda_energy, optimizer, epochs, steps_per_epoch, validation_steps, filepath_csv, output_results_dirpath, data_subset_fraction=1.0):
+    import numpy as np  # Ensure numpy is imported
+
+    # Ensure datasets are repeated
+    dataset = dataset.repeat()
+    val_dataset = val_dataset.repeat()
+
+    best_val_mse = np.inf  # Initialize best validation MSE
+
+    for epoch in range(epochs):
+        print(f"\nEpoch {epoch + 1}/{epochs}")
+        print("=" * 20)
+
+        # Initialize accumulators for metrics
+        epoch_loss = 0.0
+        step_count = 0
+
+        # Initialize metrics for training
+        train_mae = tf.keras.metrics.MeanAbsoluteError()
+        train_mse = tf.keras.metrics.MeanSquaredError()
+        train_energy_loss = 0.0
+
+        # Training loop with tqdm
+        with tqdm(total=steps_per_epoch, desc=f"Epoch {epoch+1}", unit="step") as pbar:
+            for step, (x_batch_train, y_batch_train) in enumerate(dataset):
+                if step >= steps_per_epoch:
+                    break
+
+                with tf.GradientTape() as tape:
+                    y_pred = model(x_batch_train, training=True)
+                    loss_value = combined_loss(x_batch_train, y_batch_train, y_pred, lambda_energy)
+
+                grads = tape.gradient(loss_value, model.trainable_weights)
+                optimizer.apply_gradients(zip(grads, model.trainable_weights))
+
+                # Update and accumulate metrics
+                loss_value_scalar = loss_value.numpy()
+                epoch_loss += loss_value_scalar
+                energy_loss_value = tf.reduce_mean(energy_loss(x_batch_train, y_batch_train, y_pred)).numpy()
+                train_energy_loss += energy_loss_value
+                train_mae.update_state(y_batch_train, y_pred)
+                train_mse.update_state(y_batch_train, y_pred)
+
+                # Update tqdm progress bar
+                pbar.set_postfix({
+                    "Loss": f"{loss_value_scalar:.4f}",
+                    "E. Loss": f"{energy_loss_value:.4f}",
+                    "MAE": f"{train_mae.result().numpy():.4f}",
+                    "MSE": f"{train_mse.result().numpy():.4f}",
+                })
+                pbar.update(1)
+
+                step_count += 1
+
+        # Compute averages for the epoch
+        avg_epoch_loss = epoch_loss / step_count
+        avg_epoch_mae = train_mae.result().numpy()
+        avg_epoch_mse = train_mse.result().numpy()
+        avg_epoch_energy_loss = train_energy_loss / step_count
+        print(f"Average Training Loss for Epoch {epoch + 1}: {avg_epoch_loss:.4f}, "
+              f"MAE: {avg_epoch_mae:.4f}, MSE: {avg_epoch_mse:.4f}, "
+              f"E. Loss: {avg_epoch_energy_loss:.4f}")
+
+        # Reset metrics for the next epoch
+        train_mae.reset_state()
+        train_mse.reset_state()
+
+        # Validation loop
+        val_loss = 0.0
+        val_mae = tf.keras.metrics.MeanAbsoluteError()
+        val_mse = tf.keras.metrics.MeanSquaredError()
+        val_energy_loss = 0.0
+        val_step_count = 0
+
+        # validation loop with tqdm
+        print("Validation")
+        for step, (x_batch_val, y_batch_val) in tqdm(enumerate(val_dataset), total=validation_steps, desc="Validation", unit="step"):
+        # for step, (x_batch_val, y_batch_val) in enumerate(val_dataset):
+
+            if step >= validation_steps:
+                break
+            y_val_pred = model(x_batch_val, training=False)
+            val_loss_value = combined_loss(x_batch_val, y_batch_val, y_val_pred, lambda_energy).numpy()
+            val_loss += val_loss_value
+            val_energy_loss_value = tf.reduce_mean(energy_loss(x_batch_val, y_batch_val, y_val_pred)).numpy()
+            val_energy_loss += val_energy_loss_value
+            val_mae.update_state(y_batch_val, y_val_pred)
+            val_mse.update_state(y_batch_val, y_val_pred)
+            val_step_count += 1
+
+        # Calculate average validation metrics
+        avg_val_loss = val_loss / val_step_count
+        avg_val_mae = val_mae.result().numpy()
+        avg_val_mse = val_mse.result().numpy()
+        avg_val_energy_loss = val_energy_loss / val_step_count
+
+        print(f"Validation Loss for Epoch {epoch + 1}: {avg_val_loss:.4f}, "
+              f"MAE: {avg_val_mae:.4f}, MSE: {avg_val_mse:.4f}, "
+              f"E. Loss: {avg_val_energy_loss:.4f}")
+
+        # Log all metrics to the CSV file
+        with open(filepath_csv, "a") as f:
+            f.write(f"{epoch + 1},{avg_epoch_loss},{avg_epoch_mae},{avg_epoch_mse},"
+                    f"{avg_epoch_energy_loss},{avg_val_loss},{avg_val_mae},{avg_val_mse},"
+                    f"{avg_val_energy_loss}\n")
+
+        # Save model if validation MSE improved
+        if avg_val_mse < best_val_mse:
+            best_val_mse = avg_val_mse
+            model_save_path = os.path.join(output_results_dirpath, f"best_model_lambda_{lambda_energy}_datafrac_{data_subset_fraction}_epoch_{epoch + 1}.keras")
+            model.save(model_save_path)
+            print(f"Model saved at {model_save_path} with improved validation MSE: {best_val_mse:.4f}")
+        else:
+            print(f"No improvement in validation MSE: {avg_val_mse:.4f}")
+
+
+def calculate_dataset_size(file_list, vars_mli):
+    # Load one representative file to determine sample size
+    try:
+        example_file = file_list[0]
+        ds = xr.open_dataset(example_file, engine='netcdf4')
+        samples_per_file = ds[vars_mli[0]].shape[0]  # Assuming all vars_mli have the same shape
+        print(f"Samples per file: {samples_per_file}")
+    except Exception as e:
+        print(f"Error loading file: {e}")
+        return 0
+
+    # Total dataset size
+    total_samples = samples_per_file * len(file_list)
+    print(f"Total number of samples in dataset: {total_samples}")
+    return total_samples
+
 def main(LAMBDA_ENERGY, output_results_dirpath, data_subset_fraction, n_epochs):
     N_EPOCHS = n_epochs
     shuffle_buffer = 12 * 384  # ncol=384
-    batch_size = 1024
+    batch_size = 32
+
+    # append to results_{args.lambda_energy} to the output_results_dirpath
+    output_results_dirpath = f"{output_results_dirpath}/results_{data_subset_fraction}"
 
     # Set up GPU memory growth
     setup_gpu()
@@ -40,7 +196,6 @@ def main(LAMBDA_ENERGY, output_results_dirpath, data_subset_fraction, n_epochs):
     # Paths
     norm_path = f"{root_climsim_dirpath}/preprocessing/normalizations/"
     root_train_path = (
-        
         f"{root_huggingface_data_dirpath}/datasets--LEAP--ClimSim_low-res/snapshots/"
         "bab82a2ebdc750a0134ddcd0d5813867b92eed2a/train/"
     )
@@ -50,21 +205,6 @@ def main(LAMBDA_ENERGY, output_results_dirpath, data_subset_fraction, n_epochs):
     mli_max = xr.open_dataset(norm_path + 'inputs/input_max.nc')
     mli_min = xr.open_dataset(norm_path + 'inputs/input_min.nc')
     mlo_scale = xr.open_dataset(norm_path + 'outputs/output_scale.nc')
-
-    # Define custom loss functions
-    def energy_loss(y_true, y_pred):
-        r_out = y_pred[:, 124]
-        lh = y_pred[:, 122]
-        sh = y_pred[:, 123]
-        r_in = tf.reduce_sum(y_true[:, 124:128], axis=1)
-        loss_ec = r_in - (r_out + lh + sh)
-        return tf.reduce_mean(tf.abs(loss_ec))
-
-    def combined_loss(y_true, y_pred):
-        mse = tf.keras.losses.MeanSquaredError()
-        mse_loss = mse(y_true, y_pred)
-        weighted_energy_loss = LAMBDA_ENERGY * energy_loss(y_true, y_pred)
-        return mse_loss + weighted_energy_loss
 
     # Load file list
     all_files = load_file_list(root_train_path)
@@ -86,21 +226,34 @@ def main(LAMBDA_ENERGY, output_results_dirpath, data_subset_fraction, n_epochs):
     # Create training and validation datasets
     tds = create_dataset(
         f_mli_train, vars_mli, vars_mlo, mli_mean,
-        mli_max, mli_min, mlo_scale, shuffle_buffer
+        mli_max, mli_min, mlo_scale, shuffle_buffer, batch_size
     )
     tds_val = create_dataset(
         f_mli_val, vars_mli, vars_mlo, mli_mean,
-        mli_max, mli_min, mlo_scale, shuffle_buffer
+        mli_max, mli_min, mlo_scale, shuffle_buffer, batch_size
     )
 
     print(f'[VAL] Total # of input files for validation (10% of training): {len(f_mli_val)}')
 
     # Estimate total samples
-    total_training_samples = estimate_total_samples(f_mli_train, vars_mli)
-    total_validation_samples = estimate_total_samples(f_mli_val, vars_mli)
+    # total_training_samples = estimate_total_samples(f_mli_train, vars_mli)
+    # total_validation_samples = estimate_total_samples(f_mli_val, vars_mli)
 
+    # steps_per_epoch = math.ceil(total_training_samples / batch_size)
+    # validation_steps = math.ceil(total_validation_samples / batch_size)
+
+    # Adjust `steps_per_epoch` based on the actual dataset size
+    
+
+    # Calculate dataset size
+    total_training_samples = calculate_dataset_size(f_mli_train, vars_mli)
     steps_per_epoch = math.ceil(total_training_samples / batch_size)
+    print(f"Steps per epoch: {steps_per_epoch}")
+
+    total_validation_samples = calculate_dataset_size(f_mli_val, vars_mli)
     validation_steps = math.ceil(total_validation_samples / batch_size)
+    print(f"Validation steps: {validation_steps}")
+
 
     print(f"Steps per epoch: {steps_per_epoch}")
     print(f"Validation steps: {validation_steps}")
@@ -108,44 +261,36 @@ def main(LAMBDA_ENERGY, output_results_dirpath, data_subset_fraction, n_epochs):
     # Define model
     model = build_model()
 
-    # Compile the model
-    model.compile(
-        optimizer=keras.optimizers.Adam(),
-        loss=combined_loss,
-        metrics=['mse', 'mae', 'accuracy', energy_loss]
+    # Set up optimizer
+    optimizer = keras.optimizers.Adam()
+
+    # Ensure Log directory exists
+    os.makedirs(output_results_dirpath, exist_ok=True)
+
+    filepath_csv = f'{output_results_dirpath}/csv_logger_lambda_{LAMBDA_ENERGY}_datafrac_{data_subset_fraction}.txt'
+    with open(filepath_csv, "w") as f:
+        # headers
+        f.write("epoch,train_loss,train_mae,train_mse,train_energy_loss,"
+                "val_loss,val_mae,val_mse,val_energy_loss\n")
+
+    # Train model using custom training loop
+    train_model(
+    model, 
+    tds, 
+    tds_val, 
+    LAMBDA_ENERGY, 
+    optimizer, 
+    N_EPOCHS, 
+    steps_per_epoch, 
+    validation_steps, 
+    filepath_csv, 
+    output_results_dirpath,
+    data_subset_fraction
     )
 
-    # Define callbacks
-    callbacks = define_callbacks(output_results_dirpath)
-
-    # Train the model
-    n = 0
-    while n < N_EPOCHS:
-        random.shuffle(f_mli_train)
-        tds = create_dataset(
-            f_mli_train, vars_mli, vars_mlo, mli_mean,
-            mli_max, mli_min, mlo_scale, shuffle_buffer,
-            shuffle=False
-        )
-        random.shuffle(f_mli_val)
-        tds_val = create_dataset(
-            f_mli_val, vars_mli, vars_mlo, mli_mean,
-            mli_max, mli_min, mlo_scale, shuffle_buffer,
-            shuffle=False
-        )
-
-        print(f'Epoch: {n + 1}')
-        model.fit(
-            tds,
-            validation_data=tds_val,
-            steps_per_epoch=steps_per_epoch,
-            validation_steps=validation_steps,
-            callbacks=callbacks
-        )
-
-        n += 1
 
     print("DONE")
+
 
 def setup_gpu():
     physical_devices = tf.config.list_physical_devices('GPU')
@@ -174,6 +319,7 @@ def load_file_list(root_train_path):
 def create_dataset(
     file_list, vars_mli, vars_mlo, mli_mean,
     mli_max, mli_min, mlo_scale, shuffle_buffer,
+    batch_size,
     shuffle=True
 ):
     ds = load_nc_dir_with_generator(
@@ -182,8 +328,8 @@ def create_dataset(
     )
     ds = ds.unbatch()
     if shuffle:
-        ds = ds.shuffle(buffer_size=shuffle_buffer, reshuffle_each_iteration=False)
-    batch_size = 1024
+        ds = ds.shuffle(buffer_size=shuffle_buffer, reshuffle_each_iteration=True)
+
     ds = ds.batch(batch_size)
     ds = ds.prefetch(buffer_size=int(shuffle_buffer / 384))
     return ds
@@ -225,8 +371,9 @@ def load_nc_dir_with_generator(
             dso_stack = dso_stack.to_stacked_array(
                 "mlvar", sample_dims=["batch"], name='mlo'
             )
+            # print(f"Shape of ds.values: {ds_stack.values.shape}")
 
-            yield (ds_stack.values, dso_stack.values)
+            yield (ds_stack.values, dso_stack.values) #how muh is this yeilding?
 
     return tf.data.Dataset.from_generator(
         gen,
@@ -267,27 +414,35 @@ def build_model():
     model.summary()
     return model
 
-def define_callbacks(output_results_dirpath):
+def define_callbacks(output_results_dirpath, lambda_energy, data_subset_fraction):
+    # Create directory for logs specific to lambda_energy and data_subset_fraction
+    log_dir = f'{output_results_dirpath}/logs_lambda_{lambda_energy}_datafrac_{data_subset_fraction}'
+    os.makedirs(log_dir, exist_ok=True)
+
     # TensorBoard callback
     tboard_callback = keras.callbacks.TensorBoard(
-        log_dir=f'{output_results_dirpath}/logs_tensorboard',
+        log_dir=log_dir,
         histogram_freq=1,
     )
-    # Checkpoint callback
-    filepath_checkpoint = f'{output_results_dirpath}/best_model_proto_larger.keras'
+
+    # Checkpoint callback - Save best model for the specific combination
+    filepath_checkpoint = f'{output_results_dirpath}/best_model_lambda_{lambda_energy}_datafrac_{data_subset_fraction}.keras'
     checkpoint_callback = keras.callbacks.ModelCheckpoint(
         filepath=filepath_checkpoint,
         save_weights_only=False,
-        monitor='val_mse',
-        mode='min',
+        monitor='val_mae',  # Monitor validation MAE
+        mode='min',  # Save model with minimum MAE
         save_best_only=True
     )
-    # CSV logger callback
-    filepath_csv = f'{output_results_dirpath}/csv_logger_larger.txt'
+
+    # CSV logger callback - Save logs specific to this combination
+    filepath_csv = f'{output_results_dirpath}/csv_logger_lambda_{lambda_energy}_datafrac_{data_subset_fraction}.txt'
     csv_callback = keras.callbacks.CSVLogger(
         filepath_csv, separator=",", append=True
     )
+
     return [tboard_callback, checkpoint_callback, csv_callback]
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Train the model.')
@@ -319,7 +474,7 @@ if __name__ == "__main__":
 
     if not args.output_results_dirpath:
         args.output_results_dirpath = (
-            f"/home/alvarovh/code/cse598_climate_proj/results_{args.lambda_energy}/"
+            f"/home/alvarovh/code/cse598_climate_proj/results/"
         )
 
     main(
