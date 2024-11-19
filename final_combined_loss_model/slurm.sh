@@ -8,7 +8,7 @@
 #SBATCH --gpus=1
 #SBATCH --cpus-per-gpu=12
 #SBATCH --mem-per-gpu=32GB
-
+#cse598s002f24_class
 # Start time
 start=$(date +%s)
 
