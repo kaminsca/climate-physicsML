@@ -261,6 +261,7 @@ def train_model(model, dataset, val_dataset, lambda_energy, optimizer, epochs, s
             break
 
 
+
 def calculate_dataset_size(file_list, vars_mli):
     # Load one representative file to determine sample size
     try:
