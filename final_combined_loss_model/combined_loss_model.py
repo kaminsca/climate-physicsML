@@ -242,7 +242,7 @@ def train_model(model, dataset, val_dataset, lambda_energy, optimizer, epochs, s
             f.write(f"{epoch + 1},{avg_epoch_loss},{avg_epoch_mae},{avg_epoch_mse},"
                     f"{avg_epoch_energy_loss},{avg_val_loss},{avg_val_mae},{avg_val_mse},"
                     f"{avg_val_energy_loss}\n")
-
+            
         # Early stopping logic
         if avg_val_loss < best_val_mse - min_delta:
             best_val_mse = avg_val_loss
@@ -345,16 +345,16 @@ def load_nc_dir_with_generator(
             dso['ptend_q0001'] = (
                 dso['state_q0001'] - ds['state_q0001']
             ) / 1200  # Q tendency [kg/kg/s]
-
-            ds["state_t"] = ds["state_t"][0]
-            ds["state_q0001"] = ds["state_q0001"][0]
+            index=59
+            ds["state_t"] = ds["state_t"][index]
+            ds["state_q0001"] = ds["state_q0001"][index]
 
             dso = dso[vars_mlo]
 
-            dso['ptend_t'] = dso['ptend_t'][0]
-            dso['ptend_q0001'] = dso['ptend_q0001'][0]
-            dso['state_t'] = dso['state_t'][0]
-            dso['state_q0001'] = dso['state_q0001'][0]
+            dso['ptend_t'] = dso['ptend_t'][index]
+            dso['ptend_q0001'] = dso['ptend_q0001'][index]
+            dso['state_t'] = dso['state_t'][index]
+            dso['state_q0001'] = dso['state_q0001'][index]
 
             print(f"state_t shape: {ds['state_t'].shape}")
             print(f"state_t: {ds['state_t']}")
@@ -509,14 +509,6 @@ def main(LAMBDA_ENERGY, output_results_dirpath, data_subset_fraction, n_epochs, 
     # Set up GPU memory growth
     setup_gpu()
 
-    # Variable lists
-    # vars_mlo = [
-    #     'ptend_t', 'ptend_q0001', 'cam_out_NETSW', 'cam_out_FLWDS',
-    #     'cam_out_PRECSC', 'cam_out_PRECC', 'cam_out_SOLS',
-    #     'cam_out_SOLL', 'cam_out_SOLSD', 'cam_out_SOLLD'
-    # ]
-
-
     # Paths
     norm_path = f"{root_climsim_dirpath}/preprocessing/normalizations/"
     root_train_path = (
@@ -570,16 +562,6 @@ def main(LAMBDA_ENERGY, output_results_dirpath, data_subset_fraction, n_epochs, 
         mli_max, mli_min, mlo_scale, shuffle_buffer, batch_size
     )
 
-    # Estimate total samples
-    # total_training_samples = estimate_total_samples(f_mli_train, vars_mli)
-    # total_validation_samples = estimate_total_samples(f_mli_val, vars_mli)
-
-    # steps_per_epoch = math.ceil(total_training_samples / batch_size)
-    # validation_steps = math.ceil(total_validation_samples / batch_size)
-
-    # Adjust `steps_per_epoch` based on the actual dataset size
-    
-
     # Calculate dataset size
     total_training_samples = calculate_dataset_size(training_files, vars_mli)
     steps_per_epoch = math.ceil(total_training_samples / batch_size)
@@ -622,7 +604,6 @@ def main(LAMBDA_ENERGY, output_results_dirpath, data_subset_fraction, n_epochs, 
     output_results_dirpath,
     data_subset_fraction
     )
-
 
     print("DONE")
     print(f"Elapsed time: {time.time() - start_time:.2f} seconds")
@@ -682,4 +663,4 @@ if __name__ == "__main__":
         args.batch_size
     )
 
-# python combined_loss_model.py --lambda_energy=0.1 --data_subset_fraction=0.01 --n_epochs=3
+# python combined_loss_model.py --lambda_energy=0.1 --data_subset_fraction=0.01 --n_epochs=1 /home/alvarovh/code/cse598_climate_proj/results_0inindex
