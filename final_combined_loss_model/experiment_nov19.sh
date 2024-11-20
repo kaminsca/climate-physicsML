@@ -16,7 +16,7 @@ LAMBDA_STEP=$4
 EPOCHS=$5
 
 # Define the base output directory
-BASE_OUTPUT_DIR="/home/alvarovh/code/cse598_climate_proj/results_59inindex_19novexperiment_datafraction${DATA_SUBSET_FRACTION}_epochs${EPOCHS}"
+BASE_OUTPUT_DIR="/nfs/turbo/coe-mihalcea/alvarovh/large_data/cse598_project/experimental_results/Nov19/results_59inindex_19novexperiment_datafraction${DATA_SUBSET_FRACTION}_epochs${EPOCHS}"
 
 # Loop through lambda values
 for i in $(seq $LOWER_LAMBDA $LAMBDA_STEP $UPPER_LAMBDA); do
@@ -25,15 +25,24 @@ for i in $(seq $LOWER_LAMBDA $LAMBDA_STEP $UPPER_LAMBDA); do
     LAMBDA=$(printf "%.2f" $i)
     # Create the output directory if it doesn't exist
     mkdir -p "$BASE_OUTPUT_DIR"
+
+
+    # Start time
+    START_TIME=$(date +%s)
     # Run the Python script with the current lambda value
+    echo "Training model for lambda_energy=${LAMBDA}, data_subset_fraction=${DATA_SUBSET_FRACTION}, n_epochs=${EPOCHS}"
     python combined_loss_model.py \
         --lambda_energy=$LAMBDA \
         --data_subset_fraction=$DATA_SUBSET_FRACTION \
         --n_epochs=$EPOCHS \
         --output_results_dirpath "$BASE_OUTPUT_DIR" > "$OUTPUT_LOG_PATH" 2>&1
+    
+    # End time
+    END_TIME=$(date +%s)
+    DURATION=$((END_TIME - START_TIME))
     # Check if the command was successful
     if [ $? -eq 0 ]; then
-        echo "Training completed for lambda_energy=${LAMBDA}"
+        echo "Training completed for lambda_energy=${LAMBDA} in $DURATION seconds"
     else
         echo "Training failed for lambda_energy=${LAMBDA}" >&2
         exit 1
