@@ -47,11 +47,12 @@ if gpus:
         print(f"Error setting up logical GPUs: {e}")
 
 
+
 def compute_energy_loss(x, y_true, y_pred):
     r_out = x[:, 6]  # cam_in_lwup
     lh = x[:, 4]     # pbuf_lhflx
     sh = x[:, 5]     # pbuf_shflx
-    r_in = tf.reduce_sum(y_true[:, 8:12], axis=1) # sum of 'cam_out_SOLS', 'cam_out_SOLL', 'cam_out_SOLSD', 'cam_out_SOLLD
+    r_in = tf.reduce_sum(y_pred[:, 8:12], axis=1)  # DAMN
     loss_ec = r_in - (r_out + lh + sh)
     return tf.reduce_mean(tf.abs(loss_ec))
 
@@ -91,9 +92,6 @@ def train_model(model, dataset, val_dataset, lambda_energy, optimizer, epochs, s
     val_variable_metrics_path = f"{output_results_dirpath}/val_variable_metrics_lambda_{lambda_energy}_datafrac_{data_subset_fraction}.csv"
     with open(val_variable_metrics_path, "w") as f:
         f.write("epoch,batch,variable_name,mae,mse\n")
-    
-
-
 
     for epoch in range(epochs):
         print(f"\nEpoch {epoch + 1}/{epochs}")
@@ -125,6 +123,10 @@ def train_model(model, dataset, val_dataset, lambda_energy, optimizer, epochs, s
                 # Initialize dictionaries to store per-variable MAE and MSE
                 variable_mae = {}
                 variable_mse = {}
+
+                # Log batch metrics for training
+                with open(train_batch_log_path, "a") as f:
+                    f.write(f"{epoch + 1},{step + 1},{loss_value.numpy()},{train_mae.result().numpy()},{train_mse.result().numpy()},{energy_loss_value.numpy()}\n")
                 
                 # Loop through each variable and compute its MAE and MSE
                 for i, var_name in enumerate(vars_mlo):  # Assuming the output corresponds to vars_mli
