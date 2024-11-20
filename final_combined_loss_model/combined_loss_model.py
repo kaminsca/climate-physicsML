@@ -128,10 +128,12 @@ def train_model(model, dataset, val_dataset, lambda_energy, optimizer, epochs, s
                 with open(train_batch_log_path, "a") as f:
                     f.write(f"{epoch + 1},{step + 1},{loss_value.numpy()},{train_mae.result().numpy()},{train_mse.result().numpy()},{energy_loss_value.numpy()}\n")
                 
+                mae_metric = tf.keras.metrics.MeanAbsoluteError()
+                mse_metric = tf.keras.metrics.MeanSquaredError()
                 # Loop through each variable and compute its MAE and MSE
                 for i, var_name in enumerate(vars_mlo):  # Assuming the output corresponds to vars_mli
                     mae_metric = tf.keras.metrics.MeanAbsoluteError()
-                    mse_metric = tf.keras.metrics.MeanSquaredError()
+                    
 
                     # Calculate MAE and MSE for the specific variable
                     mae_metric.update_state(y_batch_train[:, i], y_pred[:, i])
@@ -197,12 +199,16 @@ def train_model(model, dataset, val_dataset, lambda_energy, optimizer, epochs, s
                 y_val_pred = model(x_batch_val, training=False)
                 val_loss_value, val_mse_value, val_energy_loss_value = combined_loss(x_batch_val, y_batch_val, y_val_pred, lambda_energy)
 
+                # Update overall metrics for the batch
+                val_mae.update_state(y_batch_val, y_val_pred)
+                val_mse.update_state(y_batch_val, y_val_pred)
+
                 # Initialize dictionaries to store per-variable MAE and MSE for validation
                 variable_val_mae = {}
                 variable_val_mse = {}
 
                 # Loop through each variable and compute its MAE and MSE
-                for i, var_name in enumerate(vars_mlo):  # Assuming the output corresponds to vars_mli
+                for i, var_name in enumerate(vars_mlo):  
                     val_mae_metric = tf.keras.metrics.MeanAbsoluteError()
                     val_mse_metric = tf.keras.metrics.MeanSquaredError()
 
@@ -261,7 +267,6 @@ def train_model(model, dataset, val_dataset, lambda_energy, optimizer, epochs, s
         if no_improvement_epochs >= patience:
             print(f"Early stopping triggered after {no_improvement_epochs} epochs with no improvement.")
             break
-
 
 
 def calculate_dataset_size(file_list, vars_mli):
