@@ -30,11 +30,20 @@ launch_job() {
   output_dir="${OUTPUT_GLOBAL_DIR}/output_batch_size_${batch_size}_learning_rate_${learning_rate}_lambda_${lambda}"
   output_file="${output_dir}/output_batch_size_${batch_size}_learning_rate_${learning_rate}_lambda_${lambda}.out"
 
+  # Skip if a .keras model file already exists in any subdirectory of output_dir
+  if find "$output_dir" -type f -name "*.keras" 1> /dev/null 2>&1; then
+    echo "Skipping: Model already exists in $output_dir or its subdirectories"
+    return
+  fi
+
   # Create the output directory if it doesn't exist
   mkdir -p "$output_dir"
 
   echo "Running on GPU $gpu_id:"
+  # for the specific output file
   echo "CUDA_VISIBLE_DEVICES=$gpu_id python combined_loss_model.py --lambda_energy=$lambda --data_subset_fraction=$DATA_SUBSET_FRACTION --n_epochs=$N_EPOCHS --batch_size=$batch_size --lr=$learning_rate --output_results_dirpath=$output_dir > $output_file"
+  # for the slurm out
+  echo "CUDA_VISIBLE_DEVICES=$gpu_id python combined_loss_model.py --lambda_energy=$lambda --data_subset_fraction=$DATA_SUBSET_FRACTION --n_epochs=$N_EPOCHS --batch_size=$batch_size --lr=$learning_rate --output_results_dirpath=$output_dir 
 
   # Set CUDA_VISIBLE_DEVICES to the physical GPU and run the job
   CUDA_VISIBLE_DEVICES=$gpu_id python combined_loss_model.py \
