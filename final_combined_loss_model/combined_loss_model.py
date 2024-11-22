@@ -152,13 +152,35 @@ def compute_nonneg_loss(x, y_true, y_pred):
         loss_nonneg += tf.reduce_mean(tf.nn.relu(-v))
     return loss_nonneg
 
-
-def train_model(model, dataset, val_dataset, optimizer, epochs, steps_per_epoch, validation_steps, filepath_csv, output_results_dirpath, data_subset_fraction=1.0, patience=5, min_delta=0.001):
+initial_loss_functions = {
+    'mse': (mse_loss, 1.0),
+    'energy': (compute_energy_loss, 0),
+    'mass': (compute_mass_loss, 0),
+    'radiation': (compute_radiation_loss, 0),
+    'humidity': (compute_humidity_loss, 0),
+    'nonneg': (compute_nonneg_loss, 0),
+}
+def train_model(model, dataset, val_dataset, model_optimizer, lambda_optimizer, epochs, steps_per_epoch, validation_steps, filepath_csv, output_results_dirpath, data_subset_fraction=1.0, patience=5, min_delta=0.001):
     import numpy as np  # Ensure numpy is imported
     # vars_mlo = ["state_t","state_q0001",'ptend_t','ptend_q0001','cam_out_NETSW','cam_out_FLWDS','cam_out_PRECSC','cam_out_PRECC','cam_out_SOLS','cam_out_SOLL','cam_out_SOLSD','cam_out_SOLLD']
     # lambda_energy, lambda_mass, lambda_radiation, lambda_humidity, lambda_nonneg = lambdas
-    lambdas = loss_functions.values()
+    lambdas = initial_loss_functions.values()
     lambdas = [l[1] for l in lambdas]
+    TRAINABLE = True
+    if TRAINABLE:
+        # Initialize lambda parameters (before training loop)
+        lambda_energy_param = tf.Variable(initial_value=initial_loss_functions['energy'][1], trainable=True, dtype=tf.float32)
+        lambda_mass_param = tf.Variable(initial_value=initial_loss_functions['mass'][1], trainable=True, dtype=tf.float32)
+        lambda_radiation_param = tf.Variable(initial_value=initial_loss_functions['radiation'][1], trainable=True, dtype=tf.float32)
+        lambda_humidity_param = tf.Variable(initial_value=initial_loss_functions['humidity'][1], trainable=True, dtype=tf.float32)
+        lambda_nonneg_param = tf.Variable(initial_value=initial_loss_functions['nonneg'][1], trainable=True, dtype=tf.float32)
+        # Define lambdas as positive values using softplus
+        lambda_energy = tf.nn.softplus(lambda_energy_param)
+        lambda_mass = tf.nn.softplus(lambda_mass_param)
+        lambda_radiation = tf.nn.softplus(lambda_radiation_param)
+        lambda_humidity = tf.nn.softplus(lambda_humidity_param)
+        lambda_nonneg = tf.nn.softplus(lambda_nonneg_param)
+
 
     # exclude those that are 0
 
@@ -203,9 +225,6 @@ def train_model(model, dataset, val_dataset, optimizer, epochs, steps_per_epoch,
         train_humidity_loss = 0.0
         train_nonneg_loss = 0.0
 
-        # model_save_path = os.path.join(output_results_dirpath, f"best_model_lambda_{lambdas_string_with_names}_datafrac_{data_subset_fraction}_epoch_{epoch + 1}.keras")
-        # print(f"Saving model to {model_save_path}")
-        # exit()
 
         # Training loop with tqdm
         with tqdm(total=steps_per_epoch, desc=f"Epoch {epoch+1} Training", unit="step") as pbar:
@@ -213,14 +232,69 @@ def train_model(model, dataset, val_dataset, optimizer, epochs, steps_per_epoch,
                 if step >= steps_per_epoch:
                     break
 
-                with tf.GradientTape() as tape:
+                # Variables of the base model (weights)
+                model_variables = model.base_model.trainable_variables
+
+                # Lambda parameters
+                lambda_variables = [
+                    model.lambda_energy_param,
+                    model.lambda_mass_param,
+                    model.lambda_radiation_param,
+                    model.lambda_humidity_param,
+                    model.lambda_nonneg_param
+                ]
+
+
+                with tf.GradientTape(persistent=True) as tape:
+                    # Forward pass and loss computation
+                    # Access lambda parameters from the model
+                    lambda_energy_param = model.lambda_energy_param
+                    lambda_mass_param = model.lambda_mass_param
+                    lambda_radiation_param = model.lambda_radiation_param
+                    lambda_humidity_param = model.lambda_humidity_param
+                    lambda_nonneg_param = model.lambda_nonneg_param
+
+                    # Compute lambdas
+                    lambda_energy = tf.nn.softplus(lambda_energy_param)
+                    lambda_mass = tf.nn.softplus(lambda_mass_param)
+                    lambda_radiation = tf.nn.softplus(lambda_radiation_param)
+                    lambda_humidity = tf.nn.softplus(lambda_humidity_param)
+                    lambda_nonneg = tf.nn.softplus(lambda_nonneg_param)
+
+                    # Update loss_functions inside the tape
+                    loss_functions = {
+                        'mse': (mse_loss, 1.0),  # Keep MSE fixed if desired
+                        'energy': (compute_energy_loss, lambda_energy),
+                        'mass': (compute_mass_loss, lambda_mass),
+                        'radiation': (compute_radiation_loss, lambda_radiation),
+                        'humidity': (compute_humidity_loss, lambda_humidity),
+                        'nonneg': (compute_nonneg_loss, lambda_nonneg),
+                    }
+
                     y_pred = model(x_batch_train, training=True)
                     total_loss, loss_components = combined_loss(x_batch_train, y_batch_train, y_pred, loss_functions)
-                    # for now lets just use a simple mse loss
-                    # total_loss = mse_loss(x_batch_train, y_batch_train, y_pred)
-                    # loss_components = {'mse': total_loss}
+
+
                 print("Total loss: ", total_loss)
-                grads = tape.gradient(total_loss, model.trainable_weights)
+
+
+                # Compute gradients with respect to all trainable variables
+                grads = tape.gradient(total_loss, model.trainable_variables)
+                
+                # Compute gradients for model variables and lambda variables separately
+                model_grads = tape.gradient(total_loss, model_variables)
+                lambda_grads = tape.gradient(total_loss, lambda_variables)
+                # After computing gradients
+                for var, grad in zip(lambda_variables, lambda_grads):
+                    print(f"Gradient norm for {var.name}: {tf.norm(grad).numpy()}")
+
+                # Apply gradients to model weights
+                model_optimizer.apply_gradients(zip(model_grads, model_variables))
+
+                # Apply gradients to lambda parameters
+                lambda_optimizer.apply_gradients(zip(lambda_grads, lambda_variables))
+                del tape
+
                 for grad in grads:
                     if grad is not None:
                         if tf.reduce_any(tf.math.is_nan(grad)):
@@ -234,11 +308,10 @@ def train_model(model, dataset, val_dataset, optimizer, epochs, steps_per_epoch,
                         print("None gradient detected")
                         pass
 
-
-                optimizer.apply_gradients(zip(grads, model.trainable_weights))
+                print(f"Lambda Energy: {lambda_energy.numpy()}, Lambda Mass: {lambda_mass.numpy()}, Lambda Radiation: {lambda_radiation.numpy()}, Lambda Humidity: {lambda_humidity.numpy()}, Lambda Non-negativity: {lambda_nonneg.numpy()}")
 
                 # Now, total_loss is your overall loss
-                loss_value_scalar = total_loss.numpy()
+                # loss_value_scalar = total_loss.numpy()
                 #print
                 # print(f"Loss value scalar: {loss_value_scalar}, {loss_value_scalar.shape}, len of loss_components: {len(loss_components)}")
 
@@ -254,7 +327,7 @@ def train_model(model, dataset, val_dataset, optimizer, epochs, steps_per_epoch,
                 
                 # Log batch metrics for training
                 with open(train_batch_log_path, "a") as f:
-                    line = f"{epoch + 1},{step + 1},{loss_value_scalar},{train_mae.result().numpy()},{train_mse.result().numpy()},"
+                    line = f"{epoch + 1},{step + 1},{total_loss.numpy()},{train_mae.result().numpy()},{train_mse.result().numpy()},"
                     for loss_name, loss_value in loss_components.items():
                         line += f"{loss_value.numpy()},"
                     line = line[:-1] + "\n"
@@ -282,7 +355,7 @@ def train_model(model, dataset, val_dataset, optimizer, epochs, steps_per_epoch,
                 
                 # Accumulate epoch-level metrics
                 # Update epoch-level metrics
-                epoch_loss += loss_value_scalar
+                epoch_loss += total_loss.numpy()
                 train_energy_loss += energy_loss_value
                 train_mass_loss += mass_loss_value
                 train_radiation_loss += radiation_loss_value
@@ -295,7 +368,7 @@ def train_model(model, dataset, val_dataset, optimizer, epochs, steps_per_epoch,
                 
                 # Update tqdm progress bar
                 pbar.set_postfix({
-                    "Loss": f"{loss_value_scalar:.4f}",
+                    "Loss": f"{total_loss.numpy():.4f}",
                     # "E. Loss": f"{energy_loss_value:.4f}",
                     "MAE": f"{train_mae.result().numpy():.4f}",
                     "MSE": f"{train_mse.result().numpy():.4f}",
@@ -619,6 +692,77 @@ def build_model():
     print(model.output.shape)
     return model
 
+@keras.utils.register_keras_serializable()
+class CustomModel(tf.keras.Model):
+    def __init__(self, base_model, initial_lambdas):
+        super(CustomModel, self).__init__()
+        self.base_model = base_model
+
+        # Initialize trainable lambda parameters
+        self.lambda_energy_param = self.add_weight(
+            name='lambda_energy_param',
+            shape=(),
+            initializer=tf.keras.initializers.Constant(initial_lambdas['energy']),
+            trainable=True,
+        )
+        self.lambda_mass_param = self.add_weight(
+            name='lambda_mass_param',
+            shape=(),
+            initializer=tf.keras.initializers.Constant(initial_lambdas['mass']),
+            trainable=True,
+        )
+        self.lambda_radiation_param = self.add_weight(
+            name='lambda_radiation_param',
+            shape=(),
+            initializer=tf.keras.initializers.Constant(initial_lambdas['radiation']),
+            trainable=True,
+        )
+        self.lambda_humidity_param = self.add_weight(
+            name='lambda_humidity_param',
+            shape=(),
+            initializer=tf.keras.initializers.Constant(initial_lambdas['humidity']),
+            trainable=True,
+        )
+        self.lambda_nonneg_param = self.add_weight(
+            name='lambda_nonneg_param',
+            shape=(),
+            initializer=tf.keras.initializers.Constant(initial_lambdas['nonneg']),
+            trainable=True,
+        )
+
+    def call(self, inputs):
+        # Pass inputs through the base model
+        return self.base_model(inputs)
+
+    def get_config(self):
+        # Include all arguments required to reconstruct the model
+        config = super(CustomModel, self).get_config()
+        config.update({
+            'base_model': keras.layers.serialize(self.base_model),
+            'initial_lambdas': {
+                'energy': self.lambda_energy_param.numpy(),
+                'mass': self.lambda_mass_param.numpy(),
+                'radiation': self.lambda_radiation_param.numpy(),
+                'humidity': self.lambda_humidity_param.numpy(),
+                'nonneg': self.lambda_nonneg_param.numpy(),
+            }
+        })
+        return config
+
+    @classmethod
+    def from_config(cls, config):
+        # Reconstruct the base_model and initial_lambdas from the config
+        base_model = keras.layers.deserialize(config['base_model'])
+        initial_lambdas = config['initial_lambdas']
+        return cls(base_model=base_model, initial_lambdas=initial_lambdas)
+
+# # Instantiate your base model
+# base_model = build_model()
+
+# # Wrap it with the custom model
+# model = CustomModel(base_model)
+
+
 def prepare_training_files(root_path):
     """
     Prepare training files: every 10th sample for the first 5 days of each month 
@@ -733,16 +877,7 @@ def main(lambda_energy,
     mli_min = xr.open_dataset(norm_path + 'inputs/input_min.nc')
     mlo_scale = xr.open_dataset(norm_path + 'outputs/output_scale.nc')
 
-    global vars_mlo, vars_mlo_0, vars_mli, vars_mlo_dims, vars_mli_dims, input_var_indices, output_var_indices, loss_functions, lambdas_string_with_names
-    loss_functions = {
-    'mse': (mse_loss, 1.0),
-    'energy': (compute_energy_loss, lambda_energy),
-    'mass': (compute_mass_loss, lambda_mass),
-    'radiation': (compute_radiation_loss, lambda_radiation),
-    'humidity': (compute_humidity_loss, lambda_humidity),
-    'nonneg': (compute_nonneg_loss, lambda_nonneg),
-    }
-    lambdas = [d[1] for d in loss_functions.values()]
+    global vars_mlo, vars_mlo_0, vars_mli, vars_mlo_dims, vars_mli_dims, input_var_indices, output_var_indices, initial_loss_functions, lambdas_string_with_names
     
     training_files = prepare_training_files(root_train_path)
     validation_files = prepare_validation_files(root_train_path)
@@ -809,17 +944,36 @@ def main(lambda_energy,
     print(f"Steps per epoch: {steps_per_epoch}")
     print(f"Validation steps: {validation_steps}")
 
+    initial_lambdas = {
+        'energy': lambda_energy,
+        'mass': lambda_mass,
+        'radiation': lambda_radiation,
+        'humidity': lambda_humidity,
+        'nonneg': lambda_nonneg,
+    }
+
     # Define model
-    model = build_model()
+    base_model = build_model()
+
+    model = CustomModel(base_model, initial_lambdas)
+
+
 
     # Set up optimizer
     # optimizer = keras.optimizers.Adam(learning_rate=lr)
-    optimizer = tf.keras.optimizers.Adam(learning_rate=1e-3, clipvalue=1.0)
+    # optimizer = tf.keras.optimizers.Adam(learning_rate=1e-3, clipvalue=1.0)
+    # Optimizer for model weights
+    model_optimizer = tf.keras.optimizers.Adam(learning_rate=1e-3, clipvalue=1.0)
+
+    # Optimizer for lambda parameters with a higher learning rate
+    lambda_optimizer = tf.keras.optimizers.Adam(learning_rate=1e-2, clipvalue=1.0)
+
+    
 
 
     # Ensure Log directory exists
     os.makedirs(output_results_dirpath, exist_ok=True)
-    lambdas_string_with_names = "_".join([f"{name}_{value[1]}" for name, value in zip(loss_functions.keys(), loss_functions.values())])
+    lambdas_string_with_names = "_".join([f"{name}_{value[1]}" for name, value in zip(initial_loss_functions.keys(), initial_loss_functions.values())])
     filepath_csv = f'{output_results_dirpath}/csv_logger_lambdsa_{lambdas_string_with_names}_datafrac_{data_subset_fraction}.csv'
     with open(filepath_csv, "w") as f:
         # headers
@@ -836,7 +990,8 @@ def main(lambda_energy,
     model, 
     tds, 
     tds_val, 
-    optimizer, 
+    model_optimizer,
+    lambda_optimizer,
     N_EPOCHS, 
     steps_per_epoch, 
     validation_steps, 

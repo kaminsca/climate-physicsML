@@ -19,6 +19,7 @@ import cartopy.feature as cfeature
 import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
 import numpy as np
+from combined_loss_model import CustomModel  # Assuming your class is in this file
 
 def plot_contour_map(lat, lon, values, cmap='viridis', vmin=None, vmax=None, clev=11, title='', save_path=None):
     """
@@ -124,10 +125,37 @@ def load_ds_and_dso_from_file(ds_file, vars_mli, vars_mlo, vars_mlo_0, mli_mean,
     dso = dso.to_stacked_array("mlvar", sample_dims=["batch"], name='mlo')
     return ds.values, dso.values
 
+def build_model():
+    initializer = tf.keras.initializers.GlorotUniform()
+    # input_length = 2 * 60 + 5
+    input_length = len(vars_mli)
+    # output_length_lin = 2 * 60 - 118
+    output_length_relu = len(vars_mlo)
+    # output_length = output_length_lin + output_length_relu
+    # output_length =  output_length_lin + output_length_relu
+    input_layer = keras.layers.Input(shape=(input_length,), name='input')
+    hidden_0 = keras.layers.Dense(768, activation='relu', kernel_initializer=initializer)(input_layer)
+    hidden_1 = keras.layers.Dense(640, activation='relu', kernel_initializer=initializer)(hidden_0)
+    hidden_2 = keras.layers.Dense(512, activation='relu', kernel_initializer=initializer)(hidden_1)
+    hidden_3 = keras.layers.Dense(640, activation='relu', kernel_initializer=initializer)(hidden_2)
+    hidden_4 = keras.layers.Dense(640, activation='relu', kernel_initializer=initializer)(hidden_3)
+    output_pre = keras.layers.Dense(output_length_relu, activation='elu', kernel_initializer=initializer)(hidden_4)
+    output_relu = keras.layers.Dense(output_length_relu, activation='relu', kernel_initializer=initializer)(output_pre)
+
+    model = keras.Model(input_layer, output_relu, name='Emulator')
+    model.summary()
+# print dimensions fo input and output layers of model and exit
+    print("Model dimensions of input and output layers:")
+    print(model.input.shape)
+    print(model.output.shape)
+    return model
+
 def load_model(model_path):
     """Load the trained model."""
     print(f"Loading model from {model_path}...")
-    model = keras.models.load_model(model_path, compile=False)
+    # model = keras.models.load_model(model_path, compile=False, custom_objects={'CustomModel': CustomModel})
+    custom_objects = {'CustomModel': CustomModel}
+    model = keras.models.load_model(model_path, compile=False, custom_objects=custom_objects)
     # model.summary()
     return model
 
