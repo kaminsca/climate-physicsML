@@ -49,14 +49,20 @@ if gpus:
 
 def compute_mass_loss(x, y_true, y_pred):
     LHFLX = x[:, input_var_indices['pbuf_LHFLX']]  # Surface latent heat flux (W/m²)
+    # rescale
+    LHFLX = from_input_normalized_to_original(LHFLX, "pbuf_LHFLX")
     L_v = 2.5e6  # Latent heat of vaporization (J/kg)
     E = LHFLX / L_v  # Evaporation rate (kg/m²/s)
 
     PRECC = y_pred[:, output_var_indices['cam_out_PRECC']]  # Rain rate (m/s)
     PRECSC = y_pred[:, output_var_indices['cam_out_PRECSC']]  # Snow rate (m/s)
+    # Rescale
+    PRECC = PRECC / mlo_scale['cam_out_PRECC']
+    PRECSC = PRECSC / mlo_scale['cam_out_PRECSC']
     P = PRECC + PRECSC  # Total precipitation rate (m/s)
 
     ptend_q = y_pred[:, output_var_indices['ptend_q0001']]  # Specific humidity tendency (kg/kg/s)
+    # It is already in the original units, so we dont need to rescale it
     delta_t = 1200  # Time step in seconds
     delta_q = ptend_q * delta_t  # Change in specific humidity (kg/kg)
 
@@ -64,22 +70,34 @@ def compute_mass_loss(x, y_true, y_pred):
     loss_mass = tf.reduce_mean(tf.abs(delta_q - (E - P)))
     return loss_mass
 def compute_radiation_loss(x, y_true, y_pred):
-    SOLIN = x[:, input_var_indices['pbuf_SOLIN']]
     NETSW = y_pred[:, output_var_indices['cam_out_NETSW']]
     FLWDS = y_pred[:, output_var_indices['cam_out_FLWDS']]
+    # rescale them to the original units
+    NETSW = NETSW / mlo_scale['cam_out_NETSW']
+    FLWDS = FLWDS / mlo_scale['cam_out_FLWDS']
+    SOLIN = x[:, input_var_indices['pbuf_SOLIN']]
     LWUP = x[:, input_var_indices['cam_in_LWUP']]
     SHFLX = x[:, input_var_indices['pbuf_SHFLX']]
     LHFLX = x[:, input_var_indices['pbuf_LHFLX']]
+    SOLIN = from_input_normalized_to_original(SOLIN, "pbuf_SOLIN")
+    LWUP = from_input_normalized_to_original(LWUP, "cam_in_LWUP")
+    SHFLX = from_input_normalized_to_original(SHFLX, "pbuf_SHFLX")
+    LHFLX = from_input_normalized_to_original(LHFLX, "pbuf_LHFLX")
+
 
     NETR = (SOLIN - NETSW) + (FLWDS - LWUP)
     SURFACE_FLUXES = SHFLX + LHFLX
 
     loss_radiation = tf.reduce_mean(tf.abs(NETR - SURFACE_FLUXES))
     return loss_radiation
+
 def compute_humidity_loss(x, y_true, y_pred):
-    T = y_pred[:, output_var_indices['state_t']]  # Temperature (K)
     ps = x[:, input_var_indices['state_ps']]  # Surface pressure (Pa)
+    # lets rescale it:
+    ps = from_input_normalized_to_original(ps, "state_ps")
+    T = y_pred[:, output_var_indices['state_t']]  # Temperature (K)
     q = y_pred[:, output_var_indices['state_q0001']]  # Specific humidity (kg/kg)
+    # T and q are already in the original units, so we dont need to rescale them
 
     # Clamp temperature to a reasonable range (e.g., 200K to 350K)
     T = tf.clip_by_value(T, 200.0, 350.0)
@@ -126,15 +144,41 @@ def combined_loss(x, y_true, y_pred, loss_funcs):
     return total_loss, loss_components
 
 
-
 def compute_energy_loss(x, y_true, y_pred):
     r_out = x[:, input_var_indices['cam_in_LWUP']]
     lh = x[:, input_var_indices['pbuf_LHFLX']]
     sh = x[:, input_var_indices['pbuf_SHFLX']]
+    # scale them to the original units, 
+    # using mlo_scale, for vars in vars_mlo_0
+    # and mli_mean, mli_max, mli_min for vars in vars_mli
+    # cam_in_LWUP, pbuf_LHFLX, pbuf_SHFLX are in vars_mli:
+    r_out = from_input_normalized_to_original(r_out, "cam_in_LWUP")
+    lh = from_input_normalized_to_original(lh, "pbuf_LHFLX")
+    sh = from_input_normalized_to_original(sh, "pbuf_SHFLX")
+
     # Convert sum_vars to a tf.Tensor and use tf.gather
-    sum_vars = [output_var_indices[var] for var in ['cam_out_SOLS', 'cam_out_SOLL', 'cam_out_SOLSD', 'cam_out_SOLLD']]
-    sum_vars_tensor = tf.constant(sum_vars, dtype=tf.int32)
-    r_in = tf.reduce_sum(tf.gather(y_pred, sum_vars_tensor, axis=1), axis=1)
+    # sum_vars = [output_var_indices[var] for var in ['cam_out_SOLS', 'cam_out_SOLL', 'cam_out_SOLSD', 'cam_out_SOLLD']]
+    # sum_vars_tensor = tf.constant(sum_vars, dtype=tf.int32)
+
+    # r_in = tf.reduce_sum(tf.gather(y_pred, sum_vars_tensor, axis=1), axis=1)
+    # first lets get them, then  we rescale and then we sum them
+    cam_out_SOLS = y_pred[:, output_var_indices['cam_out_SOLS']]
+    cam_out_SOLL = y_pred[:, output_var_indices['cam_out_SOLL']]
+    cam_out_SOLSD = y_pred[:, output_var_indices['cam_out_SOLSD']]
+    cam_out_SOLLD = y_pred[:, output_var_indices['cam_out_SOLLD']]
+
+    # now we rescale them, because they are outputs, we use mlo_scale
+    # we normalized by using mlo_scale like this: 
+    # cam_out_SOLS = cam_out_SOLS * mlo_scale
+    # so we have to do the opposite:
+    cam_out_SOLS = cam_out_SOLS / mlo_scale['cam_out_SOLS']
+    cam_out_SOLL = cam_out_SOLL / mlo_scale['cam_out_SOLL']
+    cam_out_SOLSD = cam_out_SOLSD / mlo_scale['cam_out_SOLSD']
+    cam_out_SOLLD = cam_out_SOLLD / mlo_scale['cam_out_SOLLD']
+
+    # now we sum them
+    r_in = cam_out_SOLS + cam_out_SOLL + cam_out_SOLSD + cam_out_SOLLD
+
     loss_ec = r_in - (r_out + lh + sh)
     return tf.reduce_mean(tf.abs(loss_ec))
 
@@ -145,8 +189,13 @@ def compute_nonneg_loss(x, y_true, y_pred):
     for var in vars_to_check:
         if var in output_var_indices:
             v = y_pred[:, output_var_indices[var]]
+            # rescale them if is not 'state_q0001'
+            if var != 'state_q0001':
+                v = v / mlo_scale[var]
         elif var in input_var_indices:
             v = x[:, input_var_indices[var]]
+            # rescale them
+            v = from_input_normalized_to_original(v, var)
         else:
             continue
         loss_nonneg += tf.reduce_mean(tf.nn.relu(-v))
@@ -555,6 +604,25 @@ def load_file_list(root_train_path):
             print("File list generated and saved to file_list.pkl.")
     return all_files
 
+def from_input_normalized_to_original(normalized, var, input_var_norm_epsilon = 1e-5):
+    '''
+    Function to convert normalized input variables back to original scale
+    
+    Args:
+    normalized: tf.Tensor, normalized input variable
+    var: str, variable name
+    input_var_norm_epsilon: float, epsilon value for normalization
+    
+    Returns:
+    original: tf.Tensor, original scale input variable
+        
+    '''
+    # mli_mean, mli_max, mli_min, mlo_scale
+    # nrormalized by..
+    # ds = (ds - mli_mean) / (mli_max - mli_min + epsilon)
+    # rescaled by...
+    return normalized * (mli_max[var] - mli_min[var] + input_var_norm_epsilon) + mli_mean[var]
+
 def create_dataset(
     file_list, vars_mli, vars_mlo, mli_mean,
     mli_max, mli_min, mlo_scale, shuffle_buffer,
@@ -598,15 +666,15 @@ def load_nc_dir_with_generator(
             # state_t_ds = ds['state_t']
             # state_q0001_ds = ds['state_q0001']
             state_t_dso = dso['state_t']
-            state_q0001_ds0 = dso['state_q0001']
+            state_q0001_dso = dso['state_q0001']
             
             for kvar in ['state_t','state_q0001','state_q0002', 'state_q0003', 'state_u', 'state_v']:
                 dso[kvar.replace('state','ptend')] = (dso[kvar] - ds[kvar])/1200 # timestep=1200[sec]
             
             # normalizatoin, scaling #
             # ds = (ds-mli_mean)/(mli_max-mli_min)
-            epsilon = 1e-5
-            ds = (ds - mli_mean) / (mli_max - mli_min + epsilon)
+            input_var_norm_epsilon = 1e-5
+            ds = (ds - mli_mean) / (mli_max - mli_min + input_var_norm_epsilon)
             
             # print if this was indifined:
             dso = dso * mlo_scale
@@ -621,7 +689,7 @@ def load_nc_dir_with_generator(
             dso=dso[vars_mlo_0]
             # now lets add the additional variables: state_t
             dso["state_t"] = state_t_dso[index]
-            dso["state_q0001"] = state_q0001_ds0[index]
+            dso["state_q0001"] = state_q0001_dso[index] # I DONT SCALE THESE VARIABLES
             # scale it knowing that max T on earth in Kelvin is 329.85 and min is 174.55, and the mean is 
             # Define the min and max temperature values in Kelvin
             global min_temp, max_temp
@@ -651,7 +719,7 @@ def load_nc_dir_with_generator(
             # for x_batch, y_batch in zip(ds.values, dso.values):
             #     if tf.reduce_any(tf.math.is_nan(x_batch)) or tf.reduce_any(tf.math.is_nan(y_batch)):
             #         print("NaNs detected in dataset!")
-            denominator = (mli_max - mli_min + epsilon)
+            denominator = (mli_max - mli_min + input_var_norm_epsilon)
             for var in vars_mli:
                 if np.any(denominator[var] == 0):
                     print(f"Zero range detected in variable {var}")
@@ -871,13 +939,13 @@ def main(lambda_energy,
         "bab82a2ebdc750a0134ddcd0d5813867b92eed2a/train/"
     )
 
+    global vars_mlo, vars_mlo_0, vars_mli, vars_mlo_dims, vars_mli_dims, input_var_indices, output_var_indices, initial_loss_functions, lambdas_string_with_names, mlo_scale, mli_mean, mli_max, mli_min
+
     # Load normalization datasets
     mli_mean = xr.open_dataset(norm_path + 'inputs/input_mean.nc')
     mli_max = xr.open_dataset(norm_path + 'inputs/input_max.nc')
     mli_min = xr.open_dataset(norm_path + 'inputs/input_min.nc')
     mlo_scale = xr.open_dataset(norm_path + 'outputs/output_scale.nc')
-
-    global vars_mlo, vars_mlo_0, vars_mli, vars_mlo_dims, vars_mli_dims, input_var_indices, output_var_indices, initial_loss_functions, lambdas_string_with_names
     
     training_files = prepare_training_files(root_train_path)
     validation_files = prepare_validation_files(root_train_path)
