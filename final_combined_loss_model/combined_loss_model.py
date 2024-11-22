@@ -23,11 +23,12 @@ import numpy as np
 root_huggingface_data_dirpath = "/nfs/turbo/coe-mihalcea/alvarovh/climsim/climsim_all/"
 root_climsim_dirpath = "/home/alvarovh/code/cse598_climate_proj/ClimSim/"
 
-vars_mlo = ["state_t","state_q0001",'ptend_t','ptend_q0001','cam_out_NETSW','cam_out_FLWDS','cam_out_PRECSC','cam_out_PRECC','cam_out_SOLS','cam_out_SOLL','cam_out_SOLSD','cam_out_SOLLD']
-vars_mli = [
-    'state_t', 'state_q0001', 'state_ps', 'pbuf_SOLIN',
-    'pbuf_LHFLX', 'pbuf_SHFLX', 'cam_in_LWUP'
-]
+# vars_mlo = ["state_t","state_q0001",'ptend_t','ptend_q0001','cam_out_NETSW','cam_out_FLWDS','cam_out_PRECSC','cam_out_PRECC','cam_out_SOLS','cam_out_SOLL','cam_out_SOLSD','cam_out_SOLLD']
+# # vars_mli = [
+# #     'state_t', 'state_q0001', 'state_ps', 'pbuf_SOLIN',
+# #     'pbuf_LHFLX', 'pbuf_SHFLX', 'cam_in_LWUP'
+# # ]
+
 
 # Get the CUDA_VISIBLE_DEVICES environment variable to determine available GPUs
 visible_devices = os.environ.get('CUDA_VISIBLE_DEVICES', '0').split(',')
@@ -46,31 +47,115 @@ if gpus:
     except RuntimeError as e:
         print(f"Error setting up logical GPUs: {e}")
 
+def compute_mass_loss(x, y_true, y_pred):
+    LHFLX = x[:, input_var_indices['pbuf_LHFLX']]  # Surface latent heat flux (W/m²)
+    L_v = 2.5e6  # Latent heat of vaporization (J/kg)
+    E = LHFLX / L_v  # Evaporation rate (kg/m²/s)
 
+    PRECC = y_pred[:, output_var_indices['cam_out_PRECC']]  # Rain rate (m/s)
+    PRECSC = y_pred[:, output_var_indices['cam_out_PRECSC']]  # Snow rate (m/s)
+    P = PRECC + PRECSC  # Total precipitation rate (m/s)
+
+    ptend_q = y_pred[:, output_var_indices['ptend_q0001']]  # Specific humidity tendency (kg/kg/s)
+    delta_t = 1200  # Time step in seconds
+    delta_q = ptend_q * delta_t  # Change in specific humidity (kg/kg)
+
+    # Assume air density ρ = 1.225 kg/m³ and scale delta_q accordingly if needed
+    loss_mass = tf.reduce_mean(tf.abs(delta_q - (E - P)))
+    return loss_mass
+def compute_radiation_loss(x, y_true, y_pred):
+    SOLIN = x[:, input_var_indices['pbuf_SOLIN']]
+    NETSW = y_pred[:, output_var_indices['cam_out_NETSW']]
+    FLWDS = y_pred[:, output_var_indices['cam_out_FLWDS']]
+    LWUP = x[:, input_var_indices['cam_in_LWUP']]
+    SHFLX = x[:, input_var_indices['pbuf_SHFLX']]
+    LHFLX = x[:, input_var_indices['pbuf_LHFLX']]
+
+    NETR = (SOLIN - NETSW) + (FLWDS - LWUP)
+    SURFACE_FLUXES = SHFLX + LHFLX
+
+    loss_radiation = tf.reduce_mean(tf.abs(NETR - SURFACE_FLUXES))
+    return loss_radiation
+
+def compute_humidity_loss(x, y_true, y_pred):
+    T = y_pred[:, output_var_indices['state_t']]  # Temperature (K)
+    ps = x[:, input_var_indices['state_ps']]  # Surface pressure (Pa)
+    q = y_pred[:, output_var_indices['state_q0001']]  # Specific humidity (kg/kg)
+
+    # Compute saturation vapor pressure using Tetens formula
+    Es = 610.94 * tf.exp((17.625 * (T - 273.15)) / (T - 30.11))  # Pa
+    # qs = 0.622 * Es / (ps - Es)  # Saturation specific humidity (kg/kg) Lets do that safely:
+    qs = tf.where(ps - Es > 0, 0.622 * Es / (ps - Es), tf.zeros_like(Es))
+
+    loss_humidity = tf.reduce_mean(tf.nn.relu(q - qs))
+    return loss_humidity
+
+def mse_loss(x, y_true, y_pred):
+    mse = tf.keras.losses.MeanSquaredError()
+    line1 = (f"y_true: {y_true.shape}, y_pred: {y_pred.shape}")
+    # first 10 entries of both:
+    line2 = (f"y_true: {y_true[:10]}, y_pred: {y_pred[:10]}")
+
+    with open("mse_loss.txt", "w") as f:
+        f.write(line1 + "\n")
+        f.write(line2 + "\n")
+    return mse(y_true, y_pred)
+
+
+def combined_loss(x, y_true, y_pred, loss_funcs):
+    total_loss = 0.0
+    loss_components = {}
+    for loss_name, (loss_func, weight) in loss_funcs.items():
+        loss_value = loss_func(x, y_true, y_pred)
+        # loss_value = tf.where(tf.math.is_nan(loss_value), tf.constant(0.0), loss_value)
+        total_loss += weight * loss_value
+        # if weight is 0, lets store a tf constant
+        if weight == 0:
+            loss_value = tf.constant(0.0)
+        loss_components[loss_name] = loss_value
+        assert loss_value.shape == (), f"{loss_name} LOSS shape: {loss_value.shape}"
+        # no nan
+        assert not tf.math.is_nan(loss_value), f"{loss_name} LOSS is nan"
+    # assert expected shapes
+    assert total_loss.shape == (), f"total_loss shape: {total_loss.shape}"
+    return total_loss, loss_components
 
 def compute_energy_loss(x, y_true, y_pred):
-    r_out = x[:, 6]  # cam_in_lwup
-    lh = x[:, 4]     # pbuf_lhflx
-    sh = x[:, 5]     # pbuf_shflx
-    r_in = tf.reduce_sum(y_pred[:, 8:12], axis=1)  # DAMN
+    r_out = x[:, input_var_indices['cam_in_LWUP']]
+    lh = x[:, input_var_indices['pbuf_LHFLX']]
+    sh = x[:, input_var_indices['pbuf_SHFLX']]
+    # Convert sum_vars to a tf.Tensor and use tf.gather
+    sum_vars = [output_var_indices[var] for var in ['cam_out_SOLS', 'cam_out_SOLL', 'cam_out_SOLSD', 'cam_out_SOLLD']]
+    sum_vars_tensor = tf.constant(sum_vars, dtype=tf.int32)
+    r_in = tf.reduce_sum(tf.gather(y_pred, sum_vars_tensor, axis=1), axis=1)
     loss_ec = r_in - (r_out + lh + sh)
     return tf.reduce_mean(tf.abs(loss_ec))
 
-def combined_loss(x, y_true, y_pred, lambda_energy):
-    mse = tf.keras.losses.MeanSquaredError()
-    # print(y_true.shape, y_pred.shape)
-    mse_loss = mse(y_true, y_pred)
-    energy_loss = compute_energy_loss(x, y_true, y_pred)
-    weighted_energy_loss = lambda_energy * energy_loss
-    return mse_loss + weighted_energy_loss, mse_loss, energy_loss
 
-def train_model(model, dataset, val_dataset, lambda_energy, optimizer, epochs, steps_per_epoch, validation_steps, filepath_csv, output_results_dirpath, data_subset_fraction=1.0, patience=5, min_delta=0.001):
+def compute_nonneg_loss(x, y_true, y_pred):
+    vars_to_check = ['state_q0001', 'cam_out_PRECC', 'cam_out_PRECSC', 'cam_out_NETSW', 'cam_out_FLWDS']
+    loss_nonneg = 0.0
+    for var in vars_to_check:
+        if var in output_var_indices:
+            v = y_pred[:, output_var_indices[var]]
+        elif var in input_var_indices:
+            v = x[:, input_var_indices[var]]
+        else:
+            continue
+        loss_nonneg += tf.reduce_mean(tf.nn.relu(-v))
+    return loss_nonneg
+
+
+def train_model(model, dataset, val_dataset, lambdas, optimizer, epochs, steps_per_epoch, validation_steps, filepath_csv, output_results_dirpath, data_subset_fraction=1.0, patience=5, min_delta=0.001):
     import numpy as np  # Ensure numpy is imported
     # vars_mlo = ["state_t","state_q0001",'ptend_t','ptend_q0001','cam_out_NETSW','cam_out_FLWDS','cam_out_PRECSC','cam_out_PRECC','cam_out_SOLS','cam_out_SOLL','cam_out_SOLSD','cam_out_SOLLD']
+    lambda_energy, lambda_mass, lambda_radiation, lambda_humidity, lambda_nonneg = lambdas
+
+    # exclude those that are 0
+
     # Ensure datasets are repeated
     dataset = dataset.repeat()
     val_dataset = val_dataset.repeat()
-
 
     best_val_mse = np.inf  # Initialize best validation MSE
     no_improvement_epochs = 0  # Counter for early stopping
@@ -81,9 +166,9 @@ def train_model(model, dataset, val_dataset, lambda_energy, optimizer, epochs, s
 
     # Create and initialize batch logging CSVs
     with open(train_batch_log_path, "w") as f:
-        f.write("epoch,batch,loss,mae,mse,energy_loss\n")
+        f.write("epoch,batch,loss,mae,mse,energy_loss,mass_loss,radiation_loss,humidity_loss,nonneg_loss\n")
     with open(val_batch_log_path, "w") as f:
-        f.write("epoch,batch,loss,mae,mse,energy_loss\n")
+        f.write("epoch,batch,loss,mae,mse,energy_loss,mass_loss,radiation_loss,humidity_loss,nonneg_loss\n")
     
     train_variable_metrics_path = f"{output_results_dirpath}/train_variable_metrics_lambda_{lambda_energy}_datafrac_{data_subset_fraction}.csv"
     with open(train_variable_metrics_path, "w") as f:
@@ -105,8 +190,11 @@ def train_model(model, dataset, val_dataset, lambda_energy, optimizer, epochs, s
         train_mae = tf.keras.metrics.MeanAbsoluteError()
         train_mse = tf.keras.metrics.MeanSquaredError()
         train_energy_loss = 0.0
+        train_mass_loss = 0.0
+        train_radiation_loss = 0.0
+        train_humidity_loss = 0.0
+        train_nonneg_loss = 0.0
 
-        # Training loop with tqdm
         # Training loop with tqdm
         with tqdm(total=steps_per_epoch, desc=f"Epoch {epoch+1} Training", unit="step") as pbar:
             for step, (x_batch_train, y_batch_train) in enumerate(dataset):
@@ -115,26 +203,50 @@ def train_model(model, dataset, val_dataset, lambda_energy, optimizer, epochs, s
 
                 with tf.GradientTape() as tape:
                     y_pred = model(x_batch_train, training=True)
-                    loss_value, mse_loss, energy_loss_value = combined_loss(x_batch_train, y_batch_train, y_pred, lambda_energy)
+                    # total_loss, loss_components = combined_loss(x_batch_train, y_batch_train, y_pred, loss_functions)
+                    # for now lets just use a simple mse loss
+                    total_loss = mse_loss(x_batch_train, y_batch_train, y_pred)
+                    loss_components = {'mse': total_loss}
 
-                grads = tape.gradient(loss_value, model.trainable_weights)
+                grads = tape.gradient(total_loss, model.trainable_weights)
+                for grad in grads:
+                    if tf.reduce_any(tf.math.is_nan(grad)):
+                        print("NaN detected in gradients")
+                        exit()
+
                 optimizer.apply_gradients(zip(grads, model.trainable_weights))
 
-                # Initialize dictionaries to store per-variable MAE and MSE
-                variable_mae = {}
-                variable_mse = {}
+                # Now, total_loss is your overall loss
+                loss_value_scalar = total_loss.numpy()
+                #print
+                # print(f"Loss value scalar: {loss_value_scalar}, {loss_value_scalar.shape}, len of loss_components: {len(loss_components)}")
 
+                # Access specific loss components if needed
+                energy_loss_value = loss_components.get('energy', tf.constant(0.0)).numpy()
+                mass_loss_value = loss_components.get('mass', tf.constant(0.0)).numpy()
+                radiation_loss_value = loss_components.get('radiation', tf.constant(0.0)).numpy()
+                humidity_loss_value = loss_components.get('humidity', tf.constant(0.0)).numpy()
+                nonneg_loss_value = loss_components.get('nonneg', tf.constant(0.0)).numpy()
+
+                # PER VARIABLE METRICS ------------------------------------------------------------------------------------------------------
+                # Initialize dictionaries to store per-variable MAE and MSE
+                
                 # Log batch metrics for training
                 with open(train_batch_log_path, "a") as f:
-                    f.write(f"{epoch + 1},{step + 1},{loss_value.numpy()},{train_mae.result().numpy()},{train_mse.result().numpy()},{energy_loss_value.numpy()}\n")
+                    line = f"{epoch + 1},{step + 1},{loss_value_scalar},{train_mae.result().numpy()},{train_mse.result().numpy()},"
+                    for loss_name, loss_value in loss_components.items():
+                        line += f"{loss_value.numpy()},"
+                    line = line[:-1] + "\n"
+                    f.write(line)
                 
+                variable_mae = {}
+                variable_mse = {}
                 mae_metric = tf.keras.metrics.MeanAbsoluteError()
                 mse_metric = tf.keras.metrics.MeanSquaredError()
                 # Loop through each variable and compute its MAE and MSE
                 for i, var_name in enumerate(vars_mlo):  # Assuming the output corresponds to vars_mli
                     mae_metric = tf.keras.metrics.MeanAbsoluteError()
                     
-
                     # Calculate MAE and MSE for the specific variable
                     mae_metric.update_state(y_batch_train[:, i], y_pred[:, i])
                     mse_metric.update_state(y_batch_train[:, i], y_pred[:, i])
@@ -142,30 +254,32 @@ def train_model(model, dataset, val_dataset, lambda_energy, optimizer, epochs, s
                     # Store the computed values
                     variable_mae[var_name] = mae_metric.result().numpy()
                     variable_mse[var_name] = mse_metric.result().numpy()
-                
-                loss_value_scalar = loss_value.numpy()
-                energy_loss_value = energy_loss_value.numpy()
 
                 with open(train_variable_metrics_path, "a") as f:
                     for var_name in vars_mlo:
                         f.write(f"{epoch + 1},{step + 1},{var_name},{variable_mae[var_name]:.6f},{variable_mse[var_name]:.6f}\n")
                 
                 # Accumulate epoch-level metrics
+                # Update epoch-level metrics
                 epoch_loss += loss_value_scalar
+                train_energy_loss += energy_loss_value
+                train_mass_loss += mass_loss_value
+                train_radiation_loss += radiation_loss_value
+                train_humidity_loss += humidity_loss_value
+                train_nonneg_loss += nonneg_loss_value
                 train_mae.update_state(y_batch_train, y_pred)
                 train_mse.update_state(y_batch_train, y_pred)
-                train_energy_loss += energy_loss_value
                 step_count += 1
 
                 
                 # Update tqdm progress bar
                 pbar.set_postfix({
                     "Loss": f"{loss_value_scalar:.4f}",
-                    "E. Loss": f"{energy_loss_value:.4f}",
+                    # "E. Loss": f"{energy_loss_value:.4f}",
                     "MAE": f"{train_mae.result().numpy():.4f}",
                     "MSE": f"{train_mse.result().numpy():.4f}",
                 # lets monitor also one specific variable mse:
-                    "ptend_t_MSE": f"{variable_mse['ptend_t']:.4f}",
+                    "state_t_MSE": f"{variable_mse['state_t']:.4f}",
                     "cam_out_NETSW_MSE": f"{variable_mse['cam_out_NETSW']:.4f}",
                 })
                 pbar.update(1)
@@ -176,9 +290,21 @@ def train_model(model, dataset, val_dataset, lambda_energy, optimizer, epochs, s
         avg_epoch_mae = train_mae.result().numpy()
         avg_epoch_mse = train_mse.result().numpy()
         avg_epoch_energy_loss = train_energy_loss / step_count
+        avg_epoch_mass_loss = train_mass_loss / step_count
+        avg_epoch_radiation_loss = train_radiation_loss / step_count
+        avg_epoch_humidity_loss = train_humidity_loss / step_count
+        avg_epoch_nonneg_loss = train_nonneg_loss / step_count
+
         print(f"Average Training Loss for Epoch {epoch + 1}: {avg_epoch_loss:.4f}, "
-              f"MAE: {avg_epoch_mae:.4f}, MSE: {avg_epoch_mse:.4f}, "
-              f"E. Loss: {avg_epoch_energy_loss:.4f}")
+              f"MAE: {avg_epoch_mae:.4f}, MSE: {avg_epoch_mse:.4f} "
+                f"E. Loss: {avg_epoch_energy_loss:.4f}, "
+                f"Mass Loss: {avg_epoch_mass_loss:.4f}, "
+                f"Radiation Loss: {avg_epoch_radiation_loss:.4f}, "
+                f"Humidity Loss: {avg_epoch_humidity_loss:.4f}, "
+                f"Non-negativity Loss: {avg_epoch_nonneg_loss:.4f}")
+
+        for loss_name, loss_value in loss_components.items():
+            tf.summary.scalar(f'loss/{loss_name}', loss_value, step=epoch)
 
         # Reset metrics for the next epoch
         train_mae.reset_state()
@@ -189,6 +315,10 @@ def train_model(model, dataset, val_dataset, lambda_energy, optimizer, epochs, s
         val_mae = tf.keras.metrics.MeanAbsoluteError()
         val_mse = tf.keras.metrics.MeanSquaredError()
         val_energy_loss = 0.0
+        val_mass_loss = 0.0
+        val_radiation_loss = 0.0
+        val_humidity_loss = 0.0
+        val_nonneg_loss = 0.0
         val_step_count = 0
 
         print("Validation")
@@ -197,7 +327,7 @@ def train_model(model, dataset, val_dataset, lambda_energy, optimizer, epochs, s
                 if step >= validation_steps:
                     break
                 y_val_pred = model(x_batch_val, training=False)
-                val_loss_value, val_mse_value, val_energy_loss_value = combined_loss(x_batch_val, y_batch_val, y_val_pred, lambda_energy)
+                val_loss_value, loss_components = combined_loss(x_batch_val, y_batch_val, y_val_pred, loss_functions)
 
                 # Update overall metrics for the batch
                 val_mae.update_state(y_batch_val, y_val_pred)
@@ -222,7 +352,11 @@ def train_model(model, dataset, val_dataset, lambda_energy, optimizer, epochs, s
 
                 # Log batch metrics for validation
                 with open(val_batch_log_path, "a") as f:
-                    f.write(f"{epoch + 1},{step + 1},{val_loss_value},{val_mae.result().numpy()},{val_mse.result().numpy()},{val_energy_loss_value}\n")
+                    line = f"{epoch + 1},{step + 1},{val_loss_value},{val_mae.result().numpy()},{val_mse.result().numpy()},"
+                    for loss_name, loss_value in loss_components.items():
+                        line += f"{loss_value.numpy()},"
+                    line = line[:-1] + "\n"
+                    f.write(line)
                 
                 # Append per-variable metrics for validation
                 with open(val_variable_metrics_path, "a") as f:
@@ -231,7 +365,11 @@ def train_model(model, dataset, val_dataset, lambda_energy, optimizer, epochs, s
 
                 # Accumulate validation metrics
                 val_loss += val_loss_value
-                val_energy_loss += val_energy_loss_value
+                val_energy_loss += loss_components.get('energy', tf.constant(0.0)).numpy()
+                val_mass_loss += loss_components.get('mass', tf.constant(0.0)).numpy()
+                val_radiation_loss += loss_components.get('radiation', tf.constant(0.0)).numpy()
+                val_humidity_loss += loss_components.get('humidity', tf.constant(0.0)).numpy()
+                val_nonneg_loss += loss_components.get('nonneg', tf.constant(0.0)).numpy()
                 val_step_count += 1
                 pbar.update(1)
 
@@ -240,23 +378,37 @@ def train_model(model, dataset, val_dataset, lambda_energy, optimizer, epochs, s
         avg_val_mae = val_mae.result().numpy()
         avg_val_mse = val_mse.result().numpy()
         avg_val_energy_loss = val_energy_loss / val_step_count
+        avg_val_mass_loss = val_mass_loss / val_step_count
+        avg_val_radiation_loss = val_radiation_loss / val_step_count
+        avg_val_humidity_loss = val_humidity_loss / val_step_count
+        avg_val_nonneg_loss = val_nonneg_loss / val_step_count
+
 
         print(f"Validation Loss for Epoch {epoch + 1}: {avg_val_loss:.4f}, "
               f"MAE: {avg_val_mae:.4f}, MSE: {avg_val_mse:.4f}, "
-              f"E. Loss: {avg_val_energy_loss:.4f}")
+              f"E. Loss: {avg_val_energy_loss:.4f}, "
+                f"Mass Loss: {avg_val_mass_loss:.4f}, "
+                f"Radiation Loss: {avg_val_radiation_loss:.4f}, "
+                f"Humidity Loss: {avg_val_humidity_loss:.4f}, "
+                f"Non-negativity Loss: {avg_val_nonneg_loss:.4f}")
+        
 
         # Log epoch metrics to the epoch-level CSV
         with open(filepath_csv, "a") as f:
-            f.write(f"{epoch + 1},{avg_epoch_loss},{avg_epoch_mae},{avg_epoch_mse},"
-                    f"{avg_epoch_energy_loss},{avg_val_loss},{avg_val_mae},{avg_val_mse},"
-                    f"{avg_val_energy_loss}\n")
+            line = f"{epoch + 1},{avg_epoch_loss},{avg_epoch_mae},{avg_epoch_mse}," + \
+            f"{avg_epoch_energy_loss},{avg_val_loss},{avg_val_mae},{avg_val_mse},"
+            for loss_name, loss_value in loss_components.items():
+                line += f"{loss_value.numpy()},"
+            line = line[:-1] + "\n"
+            f.write(line)
             
-        # Early stopping logic
-        if avg_val_loss < best_val_mse - min_delta:
+        # Early stopping logic based on MSE 
+        if avg_val_mse < best_val_mse - min_delta:
             best_val_mse = avg_val_loss
             no_improvement_epochs = 0  # Reset counter
             # Save the best model
-            model_save_path = os.path.join(output_results_dirpath, f"best_model_lambda_{lambda_energy}_datafrac_{data_subset_fraction}_epoch_{epoch + 1}.keras")
+            lambdas_string_with_names = "_".join([f"{name}_{value}" for name, value in zip(loss_functions.keys(), lambdas)])
+            model_save_path = os.path.join(output_results_dirpath, f"best_model_lambda_{lambdas_string_with_names}_datafrac_{data_subset_fraction}_epoch_{epoch + 1}.keras")
             model.save(model_save_path)
             print(f"Model saved at {model_save_path} with improved validation MSE: {best_val_mse:.4f}")
         else:
@@ -284,7 +436,6 @@ def calculate_dataset_size(file_list, vars_mli):
     total_samples = samples_per_file * len(file_list)
     print(f"Total number of samples in dataset: {total_samples}")
     return total_samples
-
 
 
 def setup_gpu():
@@ -335,90 +486,116 @@ def load_nc_dir_with_generator(
 ):
     def gen():
         for file in filelist:
-            # Read mli
+            # input read / preprocess #
+            # read mli (-> ds)
             ds = xr.open_dataset(file, engine='netcdf4')
+            # subset ozone, ch4, n2o
+
+            # ds_utls = ds[vars_mli_utls]\
+            #             .isel(lev=slice(5,21)).rename({'lev':'lev2'})
+            # combine ds and ds_utls
             ds = ds[vars_mli]
-            
-            
-            # Read mlo
-            dso = xr.open_dataset(
-                file.replace('.mli.', '.mlo.'), engine='netcdf4'
-            )
 
-            # Create mlo variables: ptend_t and ptend_q0001
-            dso['ptend_t'] = (
-                dso['state_t'] - ds['state_t']
-            ) / 1200  # T tendency [K/s]
-            dso['ptend_q0001'] = (
-                dso['state_q0001'] - ds['state_q0001']
-            ) / 1200  # Q tendency [kg/kg/s]
+            # ds = ds.merge(ds_utls)
+            
+            # output read / preprocess #
+            # read mlo (-> dso)
+            dso = xr.open_dataset(file.replace('.mli.','.mlo.'), engine='netcdf4')
+            # make mlo tendency variales ("ptend_xxxx"):
+            # state_t_ds = ds['state_t']
+            # state_q0001_ds = ds['state_q0001']
+            state_t_dso = dso['state_t']
+            state_q0001_ds0 = dso['state_q0001']
+            
+            for kvar in ['state_t','state_q0001','state_q0002', 'state_q0003', 'state_u', 'state_v']:
+                dso[kvar.replace('state','ptend')] = (dso[kvar] - ds[kvar])/1200 # timestep=1200[sec]
+            
+            # normalizatoin, scaling #
+            # ds = (ds-mli_mean)/(mli_max-mli_min)
+            epsilon = 1e-8
+            ds = (ds - mli_mean) / (mli_max - mli_min + epsilon)
+            
+            # print if this was indifined:
+            dso = dso * mlo_scale
+
+            # get index 59 for variables that have more than 1 level
             index=59
-            ds["state_t"] = ds["state_t"][index]
-            ds["state_q0001"] = ds["state_q0001"][index]
+            for var in vars_mlo_0:
+                # print(var)
+                if len(dso[var].shape) == 2:
+                    dso[var] = dso[var][index]
+                    # print("changed")
+            dso=dso[vars_mlo_0]
+            # now lets add the additional variables: state_t
+            dso["state_t"] = state_t_dso[index]
+            dso["state_q0001"] = state_q0001_ds0[index]
+            # scale it knowing that max T on earth in Kelvin is 329.85 and min is 174.55, and the mean is 
+            # Define the min and max temperature values in Kelvin
+            global min_temp, max_temp
+            min_temp = 174.55
+            max_temp = 329.85
 
+            # Normalize the "ptend_t" variable in the dataset
+            # dso["ptend_t"] = dso["ptend_t"] / (max_temp - min_temp)           # remove "state_xxxx"
             dso = dso[vars_mlo]
 
-            dso['ptend_t'] = dso['ptend_t'][index]
-            dso['ptend_q0001'] = dso['ptend_q0001'][index]
-            dso['state_t'] = dso['state_t'][index]
-            dso['state_q0001'] = dso['state_q0001'][index]
+            for var in vars_mli:
+                # print(var)
+                if len(ds[var].shape) == 2:
+                    ds[var] = ds[var][index]
+                    # print("changed")
+            ds=ds[vars_mli]
 
-            print(f"state_t shape: {ds['state_t'].shape}")
-            print(f"state_t: {ds['state_t']}")
+            # flatten input variables #
+            #ds = ds.stack({'batch':{'sample','ncol'}})
+            ds = ds.stack({'batch':{'ncol'}})
+            ds = ds.to_stacked_array("mlvar", sample_dims=["batch"], name='mli')
+            #dso = dso.stack({'batch':{'sample','ncol'}})
+            dso = dso.stack({'batch':{'ncol'}})
+            dso = dso.to_stacked_array("mlvar", sample_dims=["batch"], name='mlo')
 
-            # debu
+            # Check dataset for NaNs
+            # for x_batch, y_batch in zip(ds.values, dso.values):
+            #     if tf.reduce_any(tf.math.is_nan(x_batch)) or tf.reduce_any(tf.math.is_nan(y_batch)):
+            #         print("NaNs detected in dataset!")
+            # for var in vars_mli:
+            #     diff = mli_max[var] - mli_min[var]
+            #     if np.any(diff == 0):
+            #         print(f"Zero range detected in variable {var}")
 
-            # Normalization, scaling
-            # ds_norm = (ds - mli_mean) / (mli_max - mli_min)
-            # dso_scaled = dso * mlo_scale
-
-            # Stack
-            # ds_stack = ds_norm.stack({'batch': {'ncol'}})
-            ds_stack = ds.stack({'batch': {'ncol'}})
-            ds_stack = ds_stack.to_stacked_array(
-                "mlvar", sample_dims=["batch"], name='mli'
-            )
-            dso_stack = dso.stack({'batch': {'ncol'}})
-            dso_stack = dso_stack.to_stacked_array(
-                "mlvar", sample_dims=["batch"], name='mlo'
-            )
-
-            # print(f"Shape of ds.values: {ds_stack.values.shape}")
-
-            yield (ds_stack.values, dso_stack.values) #how muh is this yeilding?
+            yield (ds.values, dso.values)
 
     return tf.data.Dataset.from_generator(
         gen,
         output_types=(tf.float32, tf.float32),
         # output_shapes=((None, 125), (None, 128))
-        output_shapes=((None,7),(None,12))
+        # output_shapes=((None,7),(None,12)) dynamically compute this
+        output_shapes=((None, len(vars_mli)), (None, len(vars_mlo)))
     )
 
 def build_model():
+    initializer = tf.keras.initializers.GlorotUniform()
     # input_length = 2 * 60 + 5
-    input_length = 7
+    input_length = len(vars_mli)
     # output_length_lin = 2 * 60 - 118
-    output_length_relu = 12
+    output_length_relu = len(vars_mlo)
     # output_length = output_length_lin + output_length_relu
     # output_length =  output_length_lin + output_length_relu
-
     input_layer = keras.layers.Input(shape=(input_length,), name='input')
-    hidden_0 = keras.layers.Dense(768, activation='relu')(input_layer)
-    hidden_1 = keras.layers.Dense(640, activation='relu')(hidden_0)
-    hidden_2 = keras.layers.Dense(512, activation='relu')(hidden_1)
-    hidden_3 = keras.layers.Dense(640, activation='relu')(hidden_2)
-    hidden_4 = keras.layers.Dense(640, activation='relu')(hidden_3)
-    output_pre = keras.layers.Dense(output_length_relu, activation='elu')(hidden_4)
-    # output_lin = keras.layers.Dense(
-    #     output_length_lin, activation='linear'
-    # )(output_pre)
-    output_relu = keras.layers.Dense(
-        output_length_relu, activation='relu'
-    )(output_pre)
-    # output_layer = keras.layers.Concatenate()([output_lin, output_relu])
+    hidden_0 = keras.layers.Dense(768, activation='relu', kernel_initializer=initializer)(input_layer)
+    hidden_1 = keras.layers.Dense(640, activation='relu', kernel_initializer=initializer)(hidden_0)
+    hidden_2 = keras.layers.Dense(512, activation='relu', kernel_initializer=initializer)(hidden_1)
+    hidden_3 = keras.layers.Dense(640, activation='relu', kernel_initializer=initializer)(hidden_2)
+    hidden_4 = keras.layers.Dense(640, activation='relu', kernel_initializer=initializer)(hidden_3)
+    output_pre = keras.layers.Dense(output_length_relu, activation='elu', kernel_initializer=initializer)(hidden_4)
+    output_relu = keras.layers.Dense(output_length_relu, activation='relu', kernel_initializer=initializer)(output_pre)
 
     model = keras.Model(input_layer, output_relu, name='Emulator')
     model.summary()
+# print dimensions fo input and output layers of model and exit
+    print("Model dimensions of input and output layers:")
+    print(model.input.shape)
+    print(model.output.shape)
     return model
 
 def prepare_training_files(root_path):
@@ -505,10 +682,17 @@ def load_training_and_validation_datasets(root_path, shuffle_buffer, batch_size)
 
     return tds, tds_val
 
-def main(LAMBDA_ENERGY, output_results_dirpath, data_subset_fraction, n_epochs, lr, batch_size=32):
+def main(lambda_energy, 
+        lambda_mass,
+        lambda_radiation,
+        lambda_humidity,
+        lambda_nonneg,
+        output_results_dirpath, data_subset_fraction, n_epochs, lr, batch_size=32):
     start_time = time.time()
     N_EPOCHS = n_epochs
     shuffle_buffer = 12 * 384  # ncol=384
+
+    lambdas = (lambda_energy, lambda_mass, lambda_radiation, lambda_humidity, lambda_nonneg)
 
     # append to results_{args.lambda_energy} to the output_results_dirpath
     output_results_dirpath = f"{output_results_dirpath}/results_{data_subset_fraction}"
@@ -529,25 +713,48 @@ def main(LAMBDA_ENERGY, output_results_dirpath, data_subset_fraction, n_epochs, 
     mli_min = xr.open_dataset(norm_path + 'inputs/input_min.nc')
     mlo_scale = xr.open_dataset(norm_path + 'outputs/output_scale.nc')
 
-    # Load file list
-    # all_files = load_file_list(root_train_path)
-
-    # Apply data subset fraction
-    # subset_size = int(len(all_files) * data_subset_fraction)
-    # all_files = all_files[:subset_size]
-
-    # random.shuffle(all_files)
-
-    # Split files into training and validation sets
-    # val_proportion = 0.1
-    # split_index = int(len(all_files) * (1 - val_proportion))
-    # f_mli_train = all_files[:split_index]
-    # f_mli_val = all_files[split_index:]
+    global vars_mlo, vars_mlo_0, vars_mli, vars_mlo_dims, vars_mli_dims, input_var_indices, output_var_indices, loss_functions
+    loss_functions = {
+    'mse': (mse_loss, 1.0),
+    'energy': (compute_energy_loss, lambda_energy),
+    'mass': (compute_mass_loss, lambda_mass),
+    'radiation': (compute_radiation_loss, lambda_radiation),
+    'humidity': (compute_humidity_loss, lambda_humidity),
+    'nonneg': (compute_nonneg_loss, lambda_nonneg),
+    }
+    
     training_files = prepare_training_files(root_train_path)
     validation_files = prepare_validation_files(root_train_path)
-    
-    # exit()
 
+    # import one file to get the variables
+    mli = xr.open_dataset(training_files[0], engine='netcdf4')
+    mlo = xr.open_dataset(training_files[0].replace('.mli.', '.mlo.'), engine='netcdf4')
+    # vars_mli      = ['state_t','state_q0001', 'state_q0002', 'state_q0003', 'state_u', 'state_v', 
+    #                  'state_ps', 'pbuf_SOLIN','pbuf_LHFLX', 'pbuf_SHFLX',  'pbuf_TAUX', 'pbuf_TAUY', 'pbuf_COSZRS',
+    #                  'cam_in_ALDIF', 'cam_in_ALDIR', 'cam_in_ASDIF', 'cam_in_ASDIR', 'cam_in_LWUP', 
+    #                  'cam_in_ICEFRAC', 'cam_in_LANDFRAC', 'cam_in_OCNFRAC', 'cam_in_SNOWHICE', 'cam_in_SNOWHLAND']
+    vars_mli  = ['cam_in_ALDIF', 'cam_in_ALDIR', 'cam_in_ASDIF', 'cam_in_ASDIR', 'cam_in_ICEFRAC', 'cam_in_LANDFRAC', 'cam_in_LWUP', 'cam_in_OCNFRAC', 'cam_in_SNOWHICE', 'cam_in_SNOWHLAND', 'pbuf_COSZRS', 'pbuf_LHFLX', 'pbuf_SHFLX', 'pbuf_SOLIN', 'pbuf_TAUX', 'pbuf_TAUY', 'state_pmid', 'state_ps', 'state_q0001', 'state_q0002', 'state_q0003', 'state_t', 'state_u', 'state_v', 'pbuf_CH4', 'pbuf_N2O', 'pbuf_ozone']
+    vars_mlo      = ['ptend_t','ptend_q0001','ptend_q0002','ptend_q0003', 'ptend_u', 'ptend_v',
+                     'cam_out_NETSW', 'cam_out_FLWDS', 'cam_out_PRECSC', 'cam_out_PRECC', 
+                     'cam_out_SOLS', 'cam_out_SOLL', 'cam_out_SOLSD', 'cam_out_SOLLD', "state_t", "state_q0001"]
+    # vars_mlo_0 is the same but without state_t, vars_mlo_0 corresponds with the scaleing factor
+    vars_mlo_0   = ['ptend_t','ptend_q0001','ptend_q0002','ptend_q0003', 'ptend_u', 'ptend_v',
+                     'cam_out_NETSW', 'cam_out_FLWDS', 'cam_out_PRECSC', 'cam_out_PRECC', 
+                     'cam_out_SOLS', 'cam_out_SOLL', 'cam_out_SOLSD', 'cam_out_SOLLD']
+
+    # vars_mlo=list(mlo.data_vars.keys())[2:]
+    # add the other variable shtat will be created in the generator
+    # vars_mlo  = vars_mlo + ['ptend_t', 'ptend_q0001', 'ptend_q0002', 'ptend_q0003', 'ptend_u', 'ptend_v']
+    print(f"vars_mlo: {vars_mlo}")
+    vars_mlo_dims = [(mlo_scale[var].values.size) for var in vars_mlo_0]
+    # vars_mlo_dims = vars_mlo_dims + [1, 1, 1, 1, 1, 1]
+    assert len(vars_mlo_0) == len(vars_mlo_dims), f"vars_mlo and vars mlo_dims dont share the same length: {len(vars_mlo_0)} != {len(vars_mlo_dims)}"
+    vars_mli = list(mli.data_vars.keys())[2:]
+    print(f"vars_mli: {vars_mli}")
+    vars_mli_dims = [(i.values.size) for i in mli_min.data_vars.values()]
+
+    input_var_indices = {name: idx for idx, name in enumerate(vars_mli)}
+    output_var_indices = {name: idx for idx, name in enumerate(vars_mlo)}
     
     print(f'[TRAIN] Total # of input files: {len(training_files)}')
     print(f'[VAL] Total # of input files: {len(validation_files)}')
@@ -578,7 +785,6 @@ def main(LAMBDA_ENERGY, output_results_dirpath, data_subset_fraction, n_epochs, 
     validation_steps = math.ceil(total_validation_samples / batch_size)
     print(f"Validation steps: {validation_steps}")
 
-
     print(f"Steps per epoch: {steps_per_epoch}")
     print(f"Validation steps: {validation_steps}")
 
@@ -586,23 +792,30 @@ def main(LAMBDA_ENERGY, output_results_dirpath, data_subset_fraction, n_epochs, 
     model = build_model()
 
     # Set up optimizer
-    optimizer = keras.optimizers.Adam(learning_rate=lr)
+    # optimizer = keras.optimizers.Adam(learning_rate=lr)
+    optimizer = tf.keras.optimizers.Adam(learning_rate=1e-3, clipvalue=1.0)
+
 
     # Ensure Log directory exists
     os.makedirs(output_results_dirpath, exist_ok=True)
-
-    filepath_csv = f'{output_results_dirpath}/csv_logger_lambda_{LAMBDA_ENERGY}_datafrac_{data_subset_fraction}.csv'
+    lambdas_names_string = "_".join([f"{name}_{value}" for name, value in zip(loss_functions.keys(), lambdas)])
+    filepath_csv = f'{output_results_dirpath}/csv_logger_lambda_{lambdas_names_string}_datafrac_{data_subset_fraction}.csv'
     with open(filepath_csv, "w") as f:
         # headers
-        f.write("epoch,train_loss,train_mae,train_mse,train_energy_loss,"
-                "val_loss,val_mae,val_mse,val_energy_loss\n")
+        line = "epoch,train_loss,train_mae,train_mse," + \
+        "train_energy_loss,train_mass_loss,train_radiation_loss,"+ \
+        "train_humidity_loss,train_nonneg_loss," + \
+        "val_loss,val_mae,val_mse," + \
+        "val_energy_loss,val_mass_loss,val_radiation_loss," + \
+        "val_humidity_loss,val_nonneg_loss\n"
+        f.write(line)
 
     # Train model using custom training loop
     train_model(
     model, 
     tds, 
     tds_val, 
-    LAMBDA_ENERGY, 
+    lambdas, 
     optimizer, 
     N_EPOCHS, 
     steps_per_epoch, 
@@ -622,7 +835,31 @@ if __name__ == "__main__":
         '--lambda_energy',
         type=float,
         default=0.1,
-        help='Value of LAMBDA_ENERGY'
+        help='Value of lambda_energy'
+    )
+    parser.add_argument(
+        '--lambda_mass',
+        type=float,
+        default=0.1,
+        help='Value of LAMBDA_MASS'
+    )
+    parser.add_argument(
+        '--lambda_radiation',
+        type=float,
+        default=0.1,
+        help='Value of LAMBDA_RADIATION'
+    )
+    parser.add_argument(
+        '--lambda_humidity',
+        type=float,
+        default=0.1,
+        help='Value of LAMBDA_HUMIDITY'
+    )
+    parser.add_argument(
+        '--lambda_nonneg',
+        type=float,
+        default=0.1,
+        help='Value of LAMBDA_NONNEG'
     )
     parser.add_argument(
         '--output_results_dirpath',
@@ -663,6 +900,10 @@ if __name__ == "__main__":
 
     main(
         args.lambda_energy,
+        args.lambda_mass,
+        args.lambda_radiation,
+        args.lambda_humidity,
+        args.lambda_nonneg,
         args.output_results_dirpath,
         args.data_subset_fraction,
         args.n_epochs,
@@ -670,4 +911,4 @@ if __name__ == "__main__":
         args.batch_size
     )
 
-# python combined_loss_model.py --lambda_energy=0.1 --data_subset_fraction=0.01 --n_epochs=1 /home/alvarovh/code/cse598_climate_proj/results_0inindex
+# python combined_loss_model.py --lambda_energy=0.1 --lambda_mass=0.1 --lambda_radiation=0.1 --lambda_humidity=0.1 --lambda_nonneg=0.1 --output_results_dirpath=/home/alvarovh/code/cse598_climate_proj/results_new/ --data_subset_fraction=0.01 --n_epochs=1
