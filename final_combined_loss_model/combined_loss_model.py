@@ -76,49 +76,56 @@ def compute_radiation_loss(x, y_true, y_pred):
 
     loss_radiation = tf.reduce_mean(tf.abs(NETR - SURFACE_FLUXES))
     return loss_radiation
-
 def compute_humidity_loss(x, y_true, y_pred):
     T = y_pred[:, output_var_indices['state_t']]  # Temperature (K)
     ps = x[:, input_var_indices['state_ps']]  # Surface pressure (Pa)
     q = y_pred[:, output_var_indices['state_q0001']]  # Specific humidity (kg/kg)
 
+    # Clamp temperature to a reasonable range (e.g., 200K to 350K)
+    T = tf.clip_by_value(T, 200.0, 350.0)
+
     # Compute saturation vapor pressure using Tetens formula
     Es = 610.94 * tf.exp((17.625 * (T - 273.15)) / (T - 30.11))  # Pa
-    # qs = 0.622 * Es / (ps - Es)  # Saturation specific humidity (kg/kg) Lets do that safely:
-    qs = tf.where(ps - Es > 0, 0.622 * Es / (ps - Es), tf.zeros_like(Es))
 
+    # Avoid division by zero by adding a small epsilon
+    epsilon = 1e-6
+    ps_minus_Es = tf.maximum(ps - Es, epsilon)  # Ensure ps - Es > 0
+    qs = 0.622 * Es / ps_minus_Es  # Saturation specific humidity (kg/kg)
+
+    # Compute the humidity loss with clamped values
     loss_humidity = tf.reduce_mean(tf.nn.relu(q - qs))
+
+    # Add checks for NaNs/Infs in intermediate values (for debugging)
+    tf.debugging.check_numerics(loss_humidity, "NaN or Inf in humidity loss")
     return loss_humidity
 
+
 def mse_loss(x, y_true, y_pred):
-    mse = tf.keras.losses.MeanSquaredError()
-    line1 = (f"y_true: {y_true.shape}, y_pred: {y_pred.shape}")
-    # first 10 entries of both:
-    line2 = (f"y_true: {y_true[:10]}, y_pred: {y_pred[:10]}")
-
-    with open("mse_loss.txt", "w") as f:
-        f.write(line1 + "\n")
-        f.write(line2 + "\n")
-    return mse(y_true, y_pred)
-
+    loss_fn = tf.keras.losses.MeanSquaredError()
+    return loss_fn(y_true, y_pred)
 
 def combined_loss(x, y_true, y_pred, loss_funcs):
     total_loss = 0.0
     loss_components = {}
     for loss_name, (loss_func, weight) in loss_funcs.items():
-        loss_value = loss_func(x, y_true, y_pred)
-        # loss_value = tf.where(tf.math.is_nan(loss_value), tf.constant(0.0), loss_value)
-        total_loss += weight * loss_value
-        # if weight is 0, lets store a tf constant
         if weight == 0:
+            # Define loss_value as zero when weight is zero
             loss_value = tf.constant(0.0)
+        else:
+            loss_value = loss_func(x, y_true, y_pred)
+            total_loss += weight * loss_value
         loss_components[loss_name] = loss_value
-        assert loss_value.shape == (), f"{loss_name} LOSS shape: {loss_value.shape}"
-        # no nan
-        assert not tf.math.is_nan(loss_value), f"{loss_name} LOSS is nan"
-    # assert expected shapes
+        # assert loss_value.shape == (), f"{loss_name} LOSS shape: {loss_value.shape}"
+        # Check for NaNs and Infs
+        # assert not tf.math.is_nan(loss_value), f"{loss_name} LOSS is nan"
+        # assert not tf.math.is_inf(loss_value), f"{loss_name} LOSS is inf"
+        print(f"{loss_name} LOSS: {loss_value}")
+    # Ensure total_loss is a scalar tensor
+    total_loss = tf.convert_to_tensor(total_loss)
     assert total_loss.shape == (), f"total_loss shape: {total_loss.shape}"
     return total_loss, loss_components
+
+
 
 def compute_energy_loss(x, y_true, y_pred):
     r_out = x[:, input_var_indices['cam_in_LWUP']]
@@ -146,10 +153,12 @@ def compute_nonneg_loss(x, y_true, y_pred):
     return loss_nonneg
 
 
-def train_model(model, dataset, val_dataset, lambdas, optimizer, epochs, steps_per_epoch, validation_steps, filepath_csv, output_results_dirpath, data_subset_fraction=1.0, patience=5, min_delta=0.001):
+def train_model(model, dataset, val_dataset, optimizer, epochs, steps_per_epoch, validation_steps, filepath_csv, output_results_dirpath, data_subset_fraction=1.0, patience=5, min_delta=0.001):
     import numpy as np  # Ensure numpy is imported
     # vars_mlo = ["state_t","state_q0001",'ptend_t','ptend_q0001','cam_out_NETSW','cam_out_FLWDS','cam_out_PRECSC','cam_out_PRECC','cam_out_SOLS','cam_out_SOLL','cam_out_SOLSD','cam_out_SOLLD']
-    lambda_energy, lambda_mass, lambda_radiation, lambda_humidity, lambda_nonneg = lambdas
+    # lambda_energy, lambda_mass, lambda_radiation, lambda_humidity, lambda_nonneg = lambdas
+    lambdas = loss_functions.values()
+    lambdas = [l[1] for l in lambdas]
 
     # exclude those that are 0
 
@@ -161,8 +170,8 @@ def train_model(model, dataset, val_dataset, lambdas, optimizer, epochs, steps_p
     no_improvement_epochs = 0  # Counter for early stopping
 
     # Batch-level logging file paths
-    train_batch_log_path = f"{output_results_dirpath}/batch_train_log_lambda_{lambda_energy}_datafrac_{data_subset_fraction}.csv"
-    val_batch_log_path = f"{output_results_dirpath}/batch_val_log_lambda_{lambda_energy}_datafrac_{data_subset_fraction}.csv"
+    train_batch_log_path = f"{output_results_dirpath}/batch_train_log_lambdas_{lambdas_string_with_names}_datafrac_{data_subset_fraction}.csv"
+    val_batch_log_path = f"{output_results_dirpath}/batch_val_log_lambdas_{lambdas_string_with_names}_datafrac_{data_subset_fraction}.csv"
 
     # Create and initialize batch logging CSVs
     with open(train_batch_log_path, "w") as f:
@@ -170,11 +179,10 @@ def train_model(model, dataset, val_dataset, lambdas, optimizer, epochs, steps_p
     with open(val_batch_log_path, "w") as f:
         f.write("epoch,batch,loss,mae,mse,energy_loss,mass_loss,radiation_loss,humidity_loss,nonneg_loss\n")
     
-    train_variable_metrics_path = f"{output_results_dirpath}/train_variable_metrics_lambda_{lambda_energy}_datafrac_{data_subset_fraction}.csv"
+    train_variable_metrics_path = f"{output_results_dirpath}/train_variable_metrics_lambdas_{lambdas_string_with_names}_datafrac_{data_subset_fraction}.csv"
     with open(train_variable_metrics_path, "w") as f:
         f.write("epoch,batch,variable_name,mae,mse\n")
-
-    val_variable_metrics_path = f"{output_results_dirpath}/val_variable_metrics_lambda_{lambda_energy}_datafrac_{data_subset_fraction}.csv"
+    val_variable_metrics_path = f"{output_results_dirpath}/val_variable_metrics_lambdas_{lambdas_string_with_names}_datafrac_{data_subset_fraction}.csv"
     with open(val_variable_metrics_path, "w") as f:
         f.write("epoch,batch,variable_name,mae,mse\n")
 
@@ -195,6 +203,10 @@ def train_model(model, dataset, val_dataset, lambdas, optimizer, epochs, steps_p
         train_humidity_loss = 0.0
         train_nonneg_loss = 0.0
 
+        # model_save_path = os.path.join(output_results_dirpath, f"best_model_lambda_{lambdas_string_with_names}_datafrac_{data_subset_fraction}_epoch_{epoch + 1}.keras")
+        # print(f"Saving model to {model_save_path}")
+        # exit()
+
         # Training loop with tqdm
         with tqdm(total=steps_per_epoch, desc=f"Epoch {epoch+1} Training", unit="step") as pbar:
             for step, (x_batch_train, y_batch_train) in enumerate(dataset):
@@ -203,16 +215,25 @@ def train_model(model, dataset, val_dataset, lambdas, optimizer, epochs, steps_p
 
                 with tf.GradientTape() as tape:
                     y_pred = model(x_batch_train, training=True)
-                    # total_loss, loss_components = combined_loss(x_batch_train, y_batch_train, y_pred, loss_functions)
+                    total_loss, loss_components = combined_loss(x_batch_train, y_batch_train, y_pred, loss_functions)
                     # for now lets just use a simple mse loss
-                    total_loss = mse_loss(x_batch_train, y_batch_train, y_pred)
-                    loss_components = {'mse': total_loss}
-
+                    # total_loss = mse_loss(x_batch_train, y_batch_train, y_pred)
+                    # loss_components = {'mse': total_loss}
+                print("Total loss: ", total_loss)
                 grads = tape.gradient(total_loss, model.trainable_weights)
                 for grad in grads:
-                    if tf.reduce_any(tf.math.is_nan(grad)):
-                        print("NaN detected in gradients")
-                        exit()
+                    if grad is not None:
+                        if tf.reduce_any(tf.math.is_nan(grad)):
+                            print("NaN detected in gradients")
+                            # You can choose to handle NaNs here
+                            with open("nan_gradients.txt", "a") as f:
+                                f.write(f"ERROR in epoch {epoch + 1}, step {step + 1}, lambdas: {lambdas_string_with_names}, datafrac: {data_subset_fraction}\n")
+                            exit()
+                    else:
+                        # Handle or log the None gradients if necessary
+                        print("None gradient detected")
+                        pass
+
 
                 optimizer.apply_gradients(zip(grads, model.trainable_weights))
 
@@ -407,8 +428,7 @@ def train_model(model, dataset, val_dataset, lambdas, optimizer, epochs, steps_p
             best_val_mse = avg_val_loss
             no_improvement_epochs = 0  # Reset counter
             # Save the best model
-            lambdas_string_with_names = "_".join([f"{name}_{value}" for name, value in zip(loss_functions.keys(), lambdas)])
-            model_save_path = os.path.join(output_results_dirpath, f"best_model_lambda_{lambdas_string_with_names}_datafrac_{data_subset_fraction}_epoch_{epoch + 1}.keras")
+            model_save_path = os.path.join(output_results_dirpath, f"best_model_lambdas_{lambdas_string_with_names}_datafrac_{data_subset_fraction}_epoch_{epoch + 1}.keras")
             model.save(model_save_path)
             print(f"Model saved at {model_save_path} with improved validation MSE: {best_val_mse:.4f}")
         else:
@@ -512,7 +532,7 @@ def load_nc_dir_with_generator(
             
             # normalizatoin, scaling #
             # ds = (ds-mli_mean)/(mli_max-mli_min)
-            epsilon = 1e-8
+            epsilon = 1e-5
             ds = (ds - mli_mean) / (mli_max - mli_min + epsilon)
             
             # print if this was indifined:
@@ -558,10 +578,11 @@ def load_nc_dir_with_generator(
             # for x_batch, y_batch in zip(ds.values, dso.values):
             #     if tf.reduce_any(tf.math.is_nan(x_batch)) or tf.reduce_any(tf.math.is_nan(y_batch)):
             #         print("NaNs detected in dataset!")
-            # for var in vars_mli:
-            #     diff = mli_max[var] - mli_min[var]
-            #     if np.any(diff == 0):
-            #         print(f"Zero range detected in variable {var}")
+            denominator = (mli_max - mli_min + epsilon)
+            for var in vars_mli:
+                if np.any(denominator[var] == 0):
+                    print(f"Zero range detected in variable {var}")
+
 
             yield (ds.values, dso.values)
 
@@ -692,7 +713,6 @@ def main(lambda_energy,
     N_EPOCHS = n_epochs
     shuffle_buffer = 12 * 384  # ncol=384
 
-    lambdas = (lambda_energy, lambda_mass, lambda_radiation, lambda_humidity, lambda_nonneg)
 
     # append to results_{args.lambda_energy} to the output_results_dirpath
     output_results_dirpath = f"{output_results_dirpath}/results_{data_subset_fraction}"
@@ -713,7 +733,7 @@ def main(lambda_energy,
     mli_min = xr.open_dataset(norm_path + 'inputs/input_min.nc')
     mlo_scale = xr.open_dataset(norm_path + 'outputs/output_scale.nc')
 
-    global vars_mlo, vars_mlo_0, vars_mli, vars_mlo_dims, vars_mli_dims, input_var_indices, output_var_indices, loss_functions
+    global vars_mlo, vars_mlo_0, vars_mli, vars_mlo_dims, vars_mli_dims, input_var_indices, output_var_indices, loss_functions, lambdas_string_with_names
     loss_functions = {
     'mse': (mse_loss, 1.0),
     'energy': (compute_energy_loss, lambda_energy),
@@ -722,6 +742,7 @@ def main(lambda_energy,
     'humidity': (compute_humidity_loss, lambda_humidity),
     'nonneg': (compute_nonneg_loss, lambda_nonneg),
     }
+    lambdas = [d[1] for d in loss_functions.values()]
     
     training_files = prepare_training_files(root_train_path)
     validation_files = prepare_validation_files(root_train_path)
@@ -798,8 +819,8 @@ def main(lambda_energy,
 
     # Ensure Log directory exists
     os.makedirs(output_results_dirpath, exist_ok=True)
-    lambdas_names_string = "_".join([f"{name}_{value}" for name, value in zip(loss_functions.keys(), lambdas)])
-    filepath_csv = f'{output_results_dirpath}/csv_logger_lambda_{lambdas_names_string}_datafrac_{data_subset_fraction}.csv'
+    lambdas_string_with_names = "_".join([f"{name}_{value[1]}" for name, value in zip(loss_functions.keys(), loss_functions.values())])
+    filepath_csv = f'{output_results_dirpath}/csv_logger_lambdsa_{lambdas_string_with_names}_datafrac_{data_subset_fraction}.csv'
     with open(filepath_csv, "w") as f:
         # headers
         line = "epoch,train_loss,train_mae,train_mse," + \
@@ -815,7 +836,6 @@ def main(lambda_energy,
     model, 
     tds, 
     tds_val, 
-    lambdas, 
     optimizer, 
     N_EPOCHS, 
     steps_per_epoch, 

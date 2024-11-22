@@ -1,13 +1,8 @@
 #!/usr/bin/env python
-# coding: utf-8
-
-# In[44]:
-
-
-# get_ipython().run_line_magic('cd', '/home/alvarovh/code/cse598_climate_proj/climate-physicsML/final_combined_loss_model')
-
-
-# In[45]:
+import sys
+# usage: python predict_and_visualize.py input_model_path out_figures_dir_path
+input_model_path = sys.argv[1]
+out_figures_dir_path = sys.argv[2]
 
 
 import os
@@ -17,6 +12,65 @@ import matplotlib.pyplot as plt
 import tensorflow as tf
 from tensorflow import keras
 import pickle
+
+import pandas as pd
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+import numpy as np
+
+def plot_contour_map(lat, lon, values, cmap='viridis', vmin=None, vmax=None, clev=11, title='', save_path=None):
+    """
+    Plot a contour map with latitude, longitude, and values on a global map.
+
+    Parameters:
+    - lat: Array-like, latitude values.
+    - lon: Array-like, longitude values.
+    - values: Array-like, data values corresponding to lat/lon.
+    - cmap: Colormap for the plot. Default is 'viridis'.
+    - vmin: Minimum value for the colormap. Default is min(values).
+    - vmax: Maximum value for the colormap. Default is max(values).
+    - clev: Number of contour levels. Default is 11.
+    - title: Title of the plot.
+    - save_path: Path to save the plot. If None, the plot is shown interactively.
+    """
+    # Set up the plot
+    fig, ax = plt.subplots(
+        subplot_kw={'projection': ccrs.PlateCarree()},
+        figsize=(10, 5)
+    )
+    
+    # Set global map features
+    ax.set_global()
+    ax.coastlines()
+    ax.gridlines(draw_labels=True)
+
+    # Handle colormap limits and contour levels
+    vmin = vmin if vmin is not None else np.min(values)
+    vmax = vmax if vmax is not None else np.max(values)
+    clevels = np.linspace(vmin, vmax, clev)
+
+    # Plot the contour map
+    contour = ax.tricontourf(
+        lon, lat, values, levels=clevels, cmap=cmap, transform=ccrs.PlateCarree()
+    )
+
+    # Add colorbar
+    cbar = fig.colorbar(contour, ax=ax, orientation='vertical', shrink=0.5, pad=0.05)
+    cbar.set_label('Value')
+
+    # Add title
+    ax.set_title(title, fontsize=14)
+
+    # Save or show the plot
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    else:
+        plt.show()
+    plt.close()
+    # close completely:
+    plt.clf()
 
 def load_ds_and_dso_from_file(ds_file, vars_mli, vars_mlo, vars_mlo_0, mli_mean, mli_max, mli_min, mlo_scale):
     dso_file = ds_file.replace(".mli.", ".mlo.")
@@ -74,7 +128,7 @@ def load_model(model_path):
     """Load the trained model."""
     print(f"Loading model from {model_path}...")
     model = keras.models.load_model(model_path, compile=False)
-    model.summary()
+    # model.summary()
     return model
 
 # def preprocess_data(input_file, vars_mli, mli_mean, mli_max, mli_min):
@@ -191,16 +245,7 @@ all_files[0]
 # Define paths
 input_file = all_files[-1]  # Replace with your .mli file
 groundtruth_file = input_file.replace(".mli.", ".mlo.")  # Replace with your .mlo file
-# model_path = "/home/alvarovh/code/cse598_climate_proj/results/results_0.1/best_model_lambda_0.0_datafrac_0.1_epoch_3.keras"  # Replace with your model path
-# model_path = "/home/alvarovh/code/cse598_climate_proj/results/results_0.01/best_model_lambda_0.0_datafrac_0.01_epoch_1.keras"  # Replace with your model path
-# model_path = "/home/alvarovh/code/cse598_climate_proj/results/results_0.01/best_model_lambda_0.1_datafrac_0.01_epoch_1.keras"
-# model_path = "/home/alvarovh/code/cse598_climate_proj/results_lambdalat/results_0.01/best_model_lambda_0.1_datafrac_0.01_epoch_1.keras"
-# model_path = "/home/alvarovh/code/cse598_climate_proj/results_lambdalat/results_0.1/best_model_lambda_0.1_datafrac_0.1_epoch_1.keras"
-model_path = "/home/alvarovh/code/cse598_climate_proj/results//results_0.01/best_model_lambda_mse_0.0_energy_0.0_mass_0.0_radiation_0.0_humidity_0.0_datafrac_0.01_epoch_1.keras"
-
-output_dir = "out_model_figures"  # Replace with your output directory
 norm_path = "/home/alvarovh/code/cse598_climate_proj/ClimSim/preprocessing/normalizations/"  # Replace with your normalization files path
-
 # Variables for input (mli) and output (mlo)
 vars_mli  = ['cam_in_ALDIF', 'cam_in_ALDIR', 'cam_in_ASDIF', 'cam_in_ASDIR', 'cam_in_ICEFRAC', 'cam_in_LANDFRAC', 'cam_in_LWUP', 'cam_in_OCNFRAC', 'cam_in_SNOWHICE', 'cam_in_SNOWHLAND', 'pbuf_COSZRS', 'pbuf_LHFLX', 'pbuf_SHFLX', 'pbuf_SOLIN', 'pbuf_TAUX', 'pbuf_TAUY', 'state_pmid', 'state_ps', 'state_q0001', 'state_q0002', 'state_q0003', 'state_t', 'state_u', 'state_v', 'pbuf_CH4', 'pbuf_N2O', 'pbuf_ozone']
 
@@ -211,153 +256,72 @@ vars_mlo_0   = ['ptend_t','ptend_q0001','ptend_q0002','ptend_q0003', 'ptend_u', 
                      'cam_out_NETSW', 'cam_out_FLWDS', 'cam_out_PRECSC', 'cam_out_PRECC', 
                      'cam_out_SOLS', 'cam_out_SOLL', 'cam_out_SOLSD', 'cam_out_SOLLD']
 
-# In[ ]:
-
-
-
-
-
-# In[49]:
-
-
 # Load normalization data
 mli_mean = xr.open_dataset(os.path.join(norm_path, "inputs/input_mean.nc"))
 mli_max = xr.open_dataset(os.path.join(norm_path, "inputs/input_max.nc"))
 mli_min = xr.open_dataset(os.path.join(norm_path, "inputs/input_min.nc"))
 mlo_scale = xr.open_dataset(os.path.join(norm_path, "outputs/output_scale.nc"))
-
-mlo_scale
-# mlo_scale = mlo_scale[vars_mlo]
-
-
-# In[50]:
-
+fn_grid = '/home/alvarovh/code/cse598_climate_proj/ClimSim/grid_info/ClimSim_low-res_grid-info.nc'
+ds_grid = xr.open_dataset(fn_grid, engine='netcdf4')
+latitudes = ds_grid['lat'].values
 
 # Load the trained model
-model = load_model(model_path)
-
-
-# In[51]:
-
-
-len(vars_mli)
-
-
-# In[52]:
+model = load_model(input_model_path)
 
 
 predictions, input_data, vars_mlo, mlo_scale, dso = make_predictions(
-    input_file, model, vars_mli, vars_mlo, mli_mean, mli_max, mli_min, mlo_scale, output_dir
+    input_file, model, vars_mli, vars_mlo, mli_mean, mli_max, mli_min, mlo_scale, out_figures_dir_path
 )
 
 
 
-fn_grid = '/home/alvarovh/code/cse598_climate_proj/ClimSim/grid_info/ClimSim_low-res_grid-info.nc'
+prediction_figures_dirpath = f"{out_figures_dir_path}/predictions_figures/"
+groundtruth_figures_dirpath = f"{out_figures_dir_path}/groundtruth_figures/"
+error_figures_dirpath = f"{out_figures_dir_path}/error_figures/"
+os.makedirs(prediction_figures_dirpath, exist_ok=True)
+os.makedirs(groundtruth_figures_dirpath, exist_ok=True)
+os.makedirs(error_figures_dirpath, exist_ok=True)
 
-ds_grid = xr.open_dataset(fn_grid, engine='netcdf4')
+print("Will save prediction figures to: ", prediction_figures_dirpath)
 
-
-
-latitudes = ds_grid['lat'].values
-
-
-import pandas as pd
-
-
-
-
-import cartopy.crs as ccrs
-import cartopy.feature as cfeature
-
-
-
-import matplotlib.pyplot as plt
-import cartopy.crs as ccrs
-import numpy as np
-
-def plot_contour_map(lat, lon, values, cmap='viridis', vmin=None, vmax=None, clev=11, title='', save_path=None):
-    """
-    Plot a contour map with latitude, longitude, and values on a global map.
-
-    Parameters:
-    - lat: Array-like, latitude values.
-    - lon: Array-like, longitude values.
-    - values: Array-like, data values corresponding to lat/lon.
-    - cmap: Colormap for the plot. Default is 'viridis'.
-    - vmin: Minimum value for the colormap. Default is min(values).
-    - vmax: Maximum value for the colormap. Default is max(values).
-    - clev: Number of contour levels. Default is 11.
-    - title: Title of the plot.
-    - save_path: Path to save the plot. If None, the plot is shown interactively.
-    """
-    # Set up the plot
-    fig, ax = plt.subplots(
-        subplot_kw={'projection': ccrs.PlateCarree()},
-        figsize=(10, 5)
-    )
-    
-    # Set global map features
-    ax.set_global()
-    ax.coastlines()
-    ax.gridlines(draw_labels=True)
-
-    # Handle colormap limits and contour levels
-    vmin = vmin if vmin is not None else np.min(values)
-    vmax = vmax if vmax is not None else np.max(values)
-    clevels = np.linspace(vmin, vmax, clev)
-
-    # Plot the contour map
-    contour = ax.tricontourf(
-        lon, lat, values, levels=clevels, cmap=cmap, transform=ccrs.PlateCarree()
-    )
-
-    # Add colorbar
-    cbar = fig.colorbar(contour, ax=ax, orientation='vertical', shrink=0.5, pad=0.05)
-    cbar.set_label('Value')
-
-    # Add title
-    ax.set_title(title, fontsize=14)
-
-    # Save or show the plot
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    else:
-        plt.show()
-
-prediction_figures_dirpath = "out_model_figures/predictions_figures/"
-groundtruth_figures_dirpath = "out_model_figures/groundtruth_figures/"
-error_figures_dirpath = "out_model_figures/error_figures/"
-
-if os.path.exists("out_model_figures") == False:
-    os.mkdir("out_model_figures")
 with open("error_log.txt", "w") as f:
     f.write("Starting with predictions\n")
-
+success_predictions_count = 0
 for i in range(0, len(vars_mlo)):
     try:
-        plot_contour_map(ds_grid['lat'], ds_grid['lon'], predictions[:,i], title=f'Predictions: {vars_mlo[i]}', save_path=f'out_model_figures/predictions_{vars_mlo[i]}.png')
-    except:
+        plot_contour_map(ds_grid['lat'], ds_grid['lon'], predictions[:,i], title=f'Predictions: {vars_mlo[i]}', save_path=f'{prediction_figures_dirpath}/predictions_{vars_mlo[i]}.png')
+        print(f"Plotted predictions for {vars_mlo[i]} in {prediction_figures_dirpath}/predictions_{vars_mlo[i]}.png")
+        success_predictions_count += 1
+    except Exception as e:
         with open("error_log.txt", "a") as f:
             f.write(f"Error plotting {vars_mlo[i]}\n")
+            f.write(str(e) + "\n")
 
 print("done with predictions\nStarting with ground truth plots:\n")
-
+success_groundtruth_count = 0
 for i in range(0, len(vars_mlo)):
     try:
         # plot_contour_map(ds_grid['lat'], ds_grid['lon'], predictions[:,i], title=f'Predictions: {vars_mlo[i]}', save_path=f'out_model_figures/predictions_{vars_mlo[i]}.png')
-        plot_contour_map(ds_grid['lat'], ds_grid['lon'], dso[:,i], title=f'Ground Truth: {vars_mlo[i]}', save_path=f'out_model_figures/groundtruth_{vars_mlo[i]}.png')
+        plot_contour_map(ds_grid['lat'], ds_grid['lon'], dso[:,i], title=f'Ground Truth: {vars_mlo[i]}', save_path=f'{groundtruth_figures_dirpath}/groundtruth_{vars_mlo[i]}.png')
+        print(f"Plotted ground truth for {vars_mlo[i]} in {groundtruth_figures_dirpath}/groundtruth_{vars_mlo[i]}.png")
+        success_groundtruth_count += 1
     except:
         with open("error_log.txt", "a") as f:
             f.write(f"Error plotting {vars_mlo[i]}\n")
 
 print("done with ground truth\nStarting with error plots:\n")
-
+success_error_count = 0
 for i in range(0, len(vars_mlo)):
     try:
-        plot_contour_map(ds_grid['lat'], ds_grid['lon'], dso[:,i] - predictions[:,i], title=f'Error: {vars_mlo[i]}', save_path=f'out_model_figures/error_{vars_mlo[i]}.png')
+        plot_contour_map(ds_grid['lat'], ds_grid['lon'], dso[:,i] - predictions[:,i], title=f'Error: {vars_mlo[i]}', save_path=f'{error_figures_dirpath}/error_{vars_mlo[i]}.png')
+        print(f"Plotted error for {vars_mlo[i]} in {error_figures_dirpath}/error_{vars_mlo[i]}.png")
+        success_error_count += 1
     except:
         with open("error_log.txt", "a") as f:
             f.write(f"Error plotting {vars_mlo[i]}\n")
+print("N successful plots ground truth: ", success_groundtruth_count)
+print("N successful plots predictions: ", success_predictions_count)
+print("N successful plots errors: ", success_error_count)
 # EEEND
 # # In[ ]:
 
