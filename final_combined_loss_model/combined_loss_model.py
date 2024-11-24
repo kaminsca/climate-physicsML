@@ -828,25 +828,25 @@ class CustomModel(tf.keras.Model):
             name='lambda_mass_param',
             shape=(),
             initializer=tf.keras.initializers.Constant(corrected_initial_lambdas['mass']),
-            trainable=(initial_lambdas['mass'] != 0),
+            trainable=(initial_lambdas['mass'] != 0) & ('mass' not in constant_lambdas),
         )
         self.lambda_radiation_param = self.add_weight(
             name='lambda_radiation_param',
             shape=(),
             initializer=tf.keras.initializers.Constant(corrected_initial_lambdas['radiation']),
-            trainable=(initial_lambdas['radiation'] != 0),
+            trainable=(initial_lambdas['radiation'] != 0) & ('radiation' not in constant_lambdas),
         )
         self.lambda_humidity_param = self.add_weight(
             name='lambda_humidity_param',
             shape=(),
             initializer=tf.keras.initializers.Constant(corrected_initial_lambdas['humidity']),
-            trainable=(initial_lambdas['humidity'] != 0),
+            trainable=(initial_lambdas['humidity'] != 0) & ('humidity' not in constant_lambdas),
         )
         self.lambda_nonneg_param = self.add_weight(
             name='lambda_nonneg_param',
             shape=(),
             initializer=tf.keras.initializers.Constant(corrected_initial_lambdas['nonneg']),
-            trainable=(initial_lambdas['nonneg'] != 0),
+            trainable=(initial_lambdas['nonneg'] != 0) & ('nonneg' not in constant_lambdas),
         )
 
     def call(self, inputs):
