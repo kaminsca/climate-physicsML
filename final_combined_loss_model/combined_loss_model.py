@@ -18,7 +18,7 @@ from sklearn.metrics import accuracy_score
 import tensorflow as tf
 from tensorflow import keras
 import numpy as np
-
+DEBUG=False
 
 root_huggingface_data_dirpath = "/nfs/turbo/coe-mihalcea/alvarovh/climsim/climsim_all/"
 root_climsim_dirpath = "/home/alvarovh/code/cse598_climate_proj/ClimSim/"
@@ -137,7 +137,8 @@ def combined_loss(x, y_true, y_pred, loss_funcs):
         # Check for NaNs and Infs
         # assert not tf.math.is_nan(loss_value), f"{loss_name} LOSS is nan"
         # assert not tf.math.is_inf(loss_value), f"{loss_name} LOSS is inf"
-        print(f"{loss_name} LOSS: {loss_value}")
+        if DEBUG:
+            print(f"{loss_name} LOSS: {loss_value}")
     # Ensure total_loss is a scalar tensor
     total_loss = tf.convert_to_tensor(total_loss)
     assert total_loss.shape == (), f"total_loss shape: {total_loss.shape}"
@@ -184,13 +185,18 @@ def compute_energy_loss(x, y_true, y_pred):
 
 
 def compute_nonneg_loss(x, y_true, y_pred):
-    vars_to_check = ['state_q0001', 'cam_out_PRECC', 'cam_out_PRECSC', 'cam_out_NETSW', 'cam_out_FLWDS']
+    # vars_to_check = ['state_q0001', 'cam_out_PRECC', 'cam_out_PRECSC', 'cam_out_NETSW', 'cam_out_FLWDS']
+    vars_in_always_positive = ['cam_in_ALDIF', 'cam_in_ALDIR', 'cam_in_ASDIF', 'cam_in_ASDIR', 'cam_in_ICEFRAC', 'cam_in_LANDFRAC', 'cam_in_LWUP', 'cam_in_OCNFRAC', 'cam_in_SNOWHICE', 'cam_in_SNOWHLAND', 'pbuf_COSZRS', 'pbuf_SOLIN', 'state_pmid', 'state_ps', 'state_q0001', 'state_q0002', 'state_q0003', 'state_t', 'pbuf_CH4', 'pbuf_N2O', 'pbuf_ozone']
+    vars_out_always_positive = ['cam_out_NETSW', 'cam_out_FLWDS', 'cam_out_PRECSC', 'cam_out_PRECC', 
+                     'cam_out_SOLS', 'cam_out_SOLL', 'cam_out_SOLSD', 'cam_out_SOLLD',"state_t"]
+    # lets rescale the output variables
+
     loss_nonneg = 0.0
-    for var in vars_to_check:
-        if var in output_var_indices:
+    for var in vars_in_always_positive + vars_out_always_positive:
+        if var in vars_out_always_positive:
             v = y_pred[:, output_var_indices[var]]
-            # rescale them if is not 'state_q0001'
-            if var != 'state_q0001':
+            # rescale them if is not 'state_q0001' or 'state_t'
+            if var != 'state_q0001' and var != 'state_t':
                 v = v / mlo_scale[var]
         elif var in input_var_indices:
             v = x[:, input_var_indices[var]]
@@ -209,13 +215,18 @@ initial_loss_functions = {
     'humidity': (compute_humidity_loss, 0),
     'nonneg': (compute_nonneg_loss, 0),
 }
-def train_model(model, dataset, val_dataset, model_optimizer, lambda_optimizer, epochs, steps_per_epoch, validation_steps, filepath_csv, output_results_dirpath, data_subset_fraction=1.0, patience=5, min_delta=0.001):
+def train_model(model, dataset, val_dataset, model_optimizer, initial_lambdas, lambda_optimizer, epochs, steps_per_epoch, validation_steps, filepath_csv, output_results_dirpath, data_subset_fraction=1.0, patience=5, min_delta=0.001):
     import numpy as np  # Ensure numpy is imported
     # vars_mlo = ["state_t","state_q0001",'ptend_t','ptend_q0001','cam_out_NETSW','cam_out_FLWDS','cam_out_PRECSC','cam_out_PRECC','cam_out_SOLS','cam_out_SOLL','cam_out_SOLSD','cam_out_SOLLD']
     # lambda_energy, lambda_mass, lambda_radiation, lambda_humidity, lambda_nonneg = lambdas
-    lambdas = initial_loss_functions.values()
-    lambdas = [l[1] for l in lambdas]
     TRAINABLE = True
+    DONT_TRAIN_THESE = ["mass", "radiation", "humidity", "nonneg"]
+    # train_lambda_energy = True if 'energy' not in DONT_TRAIN_THESE else False
+    # train_lambda_mass = True if 'mass' not in DONT_TRAIN_THESE else False
+    # train_lambda_radiation = True if 'radiation' not in DONT_TRAIN_THESE else False
+    # train_lambda_humidity = True if 'humidity' not in DONT_TRAIN_THESE else False
+    # train_lambda_nonneg = True if 'nonneg' not in DONT_TRAIN_THESE else False
+
     if TRAINABLE:
         # Initialize lambda parameters (before training loop)
         lambda_energy_param = tf.Variable(initial_value=initial_loss_functions['energy'][1], trainable=True, dtype=tf.float32)
@@ -223,12 +234,30 @@ def train_model(model, dataset, val_dataset, model_optimizer, lambda_optimizer, 
         lambda_radiation_param = tf.Variable(initial_value=initial_loss_functions['radiation'][1], trainable=True, dtype=tf.float32)
         lambda_humidity_param = tf.Variable(initial_value=initial_loss_functions['humidity'][1], trainable=True, dtype=tf.float32)
         lambda_nonneg_param = tf.Variable(initial_value=initial_loss_functions['nonneg'][1], trainable=True, dtype=tf.float32)
+        # lambda_energy_param = tf.Variable(initial_value=initial_loss_functions['energy'][1], trainable= train_lambda_energy, dtype=tf.float32)
+        # lambda_mass_param = tf.Variable(initial_value=initial_loss_functions['mass'][1], trainable= train_lambda_mass, dtype=tf.float32)
+        # lambda_radiation_param = tf.Variable(initial_value=initial_loss_functions['radiation'][1], trainable= train_lambda_radiation, dtype=tf.float32)
+        # lambda_humidity_param = tf.Variable(initial_value=initial_loss_functions['humidity'][1], trainable= train_lambda_humidity, dtype=tf.float32)
+        # lambda_nonneg_param = tf.Variable(initial_value=initial_loss_functions['nonneg'][1], trainable= train_lambda_nonneg, dtype=tf.float32)
+        # for dont_train_these in DONT_TRAIN_THESE:
+        #     if DONT_TRAIN_THESE[dont_train_these]:
+        #         if dont_train_these == 'energy':
+        #             lambda_energy_param = tf.constant(0.0)
+        #         elif dont_train_these == 'mass':
+        #             lambda_mass_param = tf.constant(0.0)
+        #         elif dont_train_these == 'radiation':
+        #             lambda_radiation_param = tf.constant(0.0)
+        #         elif dont_train_these == 'humidity':
+        #             lambda_humidity_param = tf.constant(0.0)
+        #         elif dont_train_these == 'nonneg':
+        #             lambda_nonneg_param = tf.constant(0.0)
         # Define lambdas as positive values using softplus
-        lambda_energy = tf.nn.softplus(lambda_energy_param)
-        lambda_mass = tf.nn.softplus(lambda_mass_param)
-        lambda_radiation = tf.nn.softplus(lambda_radiation_param)
-        lambda_humidity = tf.nn.softplus(lambda_humidity_param)
-        lambda_nonneg = tf.nn.softplus(lambda_nonneg_param)
+        lambda_energy = tf.constant(0.0)  if 'energy' in DONT_TRAIN_THESE else tf.nn.softplus(lambda_energy_param)
+        lambda_mass = tf.constant(0.0)  if 'mass' in DONT_TRAIN_THESE else tf.nn.softplus(lambda_mass_param)
+        lambda_radiation = tf.constant(0.0)  if 'radiation' in DONT_TRAIN_THESE else tf.nn.softplus(lambda_radiation_param)
+        lambda_humidity = tf.constant(0.0)  if 'humidity' in DONT_TRAIN_THESE else tf.nn.softplus(lambda_humidity_param)
+        lambda_nonneg = tf.constant(0.0)  if 'nonneg' in DONT_TRAIN_THESE else tf.nn.softplus(lambda_nonneg_param)
+    
 
 
     # exclude those that are 0
@@ -246,9 +275,9 @@ def train_model(model, dataset, val_dataset, model_optimizer, lambda_optimizer, 
 
     # Create and initialize batch logging CSVs
     with open(train_batch_log_path, "w") as f:
-        f.write("epoch,batch,loss,mae,mse,energy_loss,mass_loss,radiation_loss,humidity_loss,nonneg_loss\n")
+        f.write("epoch,batch,loss,mae,mse,energy_loss,mass_loss,radiation_loss,humidity_loss,nonneg_loss,lambda_energy,lambda_mass,lambda_radiation,lambda_humidity,lambda_nonneg\n")
     with open(val_batch_log_path, "w") as f:
-        f.write("epoch,batch,loss,mae,mse,energy_loss,mass_loss,radiation_loss,humidity_loss,nonneg_loss\n")
+        f.write("epoch,batch,loss,mae,mse,energy_loss,mass_loss,radiation_loss,humidity_loss,nonneg_loss,lambda_energy,lambda_mass,lambda_radiation,lambda_humidity,lambda_nonneg\n")
     
     train_variable_metrics_path = f"{output_results_dirpath}/train_variable_metrics_lambdas_{lambdas_string_with_names}_datafrac_{data_subset_fraction}.csv"
     with open(train_variable_metrics_path, "w") as f:
@@ -304,11 +333,11 @@ def train_model(model, dataset, val_dataset, model_optimizer, lambda_optimizer, 
                     lambda_nonneg_param = model.lambda_nonneg_param
 
                     # Compute lambdas
-                    lambda_energy = tf.nn.softplus(lambda_energy_param)
-                    lambda_mass = tf.nn.softplus(lambda_mass_param)
-                    lambda_radiation = tf.nn.softplus(lambda_radiation_param)
-                    lambda_humidity = tf.nn.softplus(lambda_humidity_param)
-                    lambda_nonneg = tf.nn.softplus(lambda_nonneg_param)
+                    lambda_energy = tf.constant(0.0)  if 'energy' in DONT_TRAIN_THESE else tf.nn.softplus(lambda_energy_param)
+                    lambda_mass = tf.constant(0.0)  if 'mass' in DONT_TRAIN_THESE else tf.nn.softplus(lambda_mass_param)
+                    lambda_radiation = tf.constant(0.0)  if 'radiation' in DONT_TRAIN_THESE else tf.nn.softplus(lambda_radiation_param)
+                    lambda_humidity = tf.constant(0.0)  if 'humidity' in DONT_TRAIN_THESE else tf.nn.softplus(lambda_humidity_param)
+                    lambda_nonneg = tf.constant(0.0)  if 'nonneg' in DONT_TRAIN_THESE else tf.nn.softplus(lambda_nonneg_param)
 
                     # Update loss_functions inside the tape
                     loss_functions = {
@@ -323,8 +352,8 @@ def train_model(model, dataset, val_dataset, model_optimizer, lambda_optimizer, 
                     y_pred = model(x_batch_train, training=True)
                     total_loss, loss_components = combined_loss(x_batch_train, y_batch_train, y_pred, loss_functions)
 
-
-                print("Total loss: ", total_loss)
+                if DEBUG:
+                    print("Total loss: ", total_loss)
 
 
                 # Compute gradients with respect to all trainable variables
@@ -335,13 +364,16 @@ def train_model(model, dataset, val_dataset, model_optimizer, lambda_optimizer, 
                 lambda_grads = tape.gradient(total_loss, lambda_variables)
                 # After computing gradients
                 for var, grad in zip(lambda_variables, lambda_grads):
-                    print(f"Gradient norm for {var.name}: {tf.norm(grad).numpy()}")
+                    if DEBUG:
+                        print(f"Gradient norm for {var.name}: {tf.norm(grad).numpy()}")
 
                 # Apply gradients to model weights
                 model_optimizer.apply_gradients(zip(model_grads, model_variables))
 
                 # Apply gradients to lambda parameters
-                lambda_optimizer.apply_gradients(zip(lambda_grads, lambda_variables))
+                # skip if no lambdas are trainableL
+                if len(constant_lambdas) < 5:
+                    lambda_optimizer.apply_gradients(zip(lambda_grads, lambda_variables))
                 del tape
 
                 for grad in grads:
@@ -356,8 +388,8 @@ def train_model(model, dataset, val_dataset, model_optimizer, lambda_optimizer, 
                         # Handle or log the None gradients if necessary
                         print("None gradient detected")
                         pass
-
-                print(f"Lambda Energy: {lambda_energy.numpy()}, Lambda Mass: {lambda_mass.numpy()}, Lambda Radiation: {lambda_radiation.numpy()}, Lambda Humidity: {lambda_humidity.numpy()}, Lambda Non-negativity: {lambda_nonneg.numpy()}")
+                if DEBUG:
+                    print(f"Lambda Energy: {lambda_energy.numpy()}, Lambda Mass: {lambda_mass.numpy()}, Lambda Radiation: {lambda_radiation.numpy()}, Lambda Humidity: {lambda_humidity.numpy()}, Lambda Non-negativity: {lambda_nonneg.numpy()}")
 
                 # Now, total_loss is your overall loss
                 # loss_value_scalar = total_loss.numpy()
@@ -375,12 +407,19 @@ def train_model(model, dataset, val_dataset, model_optimizer, lambda_optimizer, 
                 # Initialize dictionaries to store per-variable MAE and MSE
                 
                 # Log batch metrics for training
+                # with open(train_batch_log_path, "a") as f:
+                #     line = f"{epoch + 1},{step + 1},{total_loss.numpy()},{train_mae.result().numpy()},{train_mse.result().numpy()}, {energy_loss_value},{mass_loss_value},{radiation_loss_value},{humidity_loss_value},{nonneg_loss_value},"
+                #     for loss_name, loss_value in loss_components.items():
+                #         line += f"{loss_value.numpy()},"
+                #     line = line[:-1] + "\n"
+                #     f.write(line)
+                # Log batch metrics for training
                 with open(train_batch_log_path, "a") as f:
-                    line = f"{epoch + 1},{step + 1},{total_loss.numpy()},{train_mae.result().numpy()},{train_mse.result().numpy()},"
-                    for loss_name, loss_value in loss_components.items():
-                        line += f"{loss_value.numpy()},"
-                    line = line[:-1] + "\n"
+                    # Construct the line for CSV
+                    line = f"{epoch + 1},{step + 1},{total_loss.numpy()},{train_mae.result().numpy()},{train_mse.result().numpy()},{energy_loss_value},{mass_loss_value},{radiation_loss_value},{humidity_loss_value},{nonneg_loss_value}," \
+                        f"{lambda_energy.numpy()},{lambda_mass.numpy()},{lambda_radiation.numpy()},{lambda_humidity.numpy()},{lambda_nonneg.numpy()}\n"
                     f.write(line)
+
                 
                 variable_mae = {}
                 variable_mse = {}
@@ -495,7 +534,7 @@ def train_model(model, dataset, val_dataset, model_optimizer, lambda_optimizer, 
 
                 # Log batch metrics for validation
                 with open(val_batch_log_path, "a") as f:
-                    line = f"{epoch + 1},{step + 1},{val_loss_value},{val_mae.result().numpy()},{val_mse.result().numpy()},"
+                    line = f"{epoch + 1},{step + 1},{val_loss_value},{val_mae.result().numpy()},{val_mse.result().numpy()}, {val_energy_loss},{val_mass_loss},{val_radiation_loss},{val_humidity_loss},{val_nonneg_loss},"
                     for loss_name, loss_value in loss_components.items():
                         line += f"{loss_value.numpy()},"
                     line = line[:-1] + "\n"
@@ -621,6 +660,11 @@ def from_input_normalized_to_original(normalized, var, input_var_norm_epsilon = 
     # nrormalized by..
     # ds = (ds - mli_mean) / (mli_max - mli_min + epsilon)
     # rescaled by...
+    # print(f"Variable: {var}")
+    # print(f"normalized shape: {normalized.shape}")
+    # print(f"scaling factor shape: {(mli_max[var] - mli_min[var] + input_var_norm_epsilon).shape}")
+    # print(f"mean shape: {mli_mean[var].shape}")
+
     return normalized * (mli_max[var] - mli_min[var] + input_var_norm_epsilon) + mli_mean[var]
 
 def create_dataset(
@@ -766,36 +810,43 @@ class CustomModel(tf.keras.Model):
         super(CustomModel, self).__init__()
         self.base_model = base_model
 
+        corrected_initial_lambdas = {}
+        for var in initial_lambdas:
+            if initial_lambdas[var] ==0:
+                corrected_initial_lambdas[var] = (-1e-10)
+            else:
+                corrected_initial_lambdas[var] = initial_lambdas[var]
+
         # Initialize trainable lambda parameters
         self.lambda_energy_param = self.add_weight(
             name='lambda_energy_param',
             shape=(),
-            initializer=tf.keras.initializers.Constant(initial_lambdas['energy']),
-            trainable=True,
+            initializer=tf.keras.initializers.Constant(corrected_initial_lambdas['energy']),
+            trainable=(initial_lambdas['energy'] != 0) & ('energy' not in constant_lambdas),
         )
         self.lambda_mass_param = self.add_weight(
             name='lambda_mass_param',
             shape=(),
-            initializer=tf.keras.initializers.Constant(initial_lambdas['mass']),
-            trainable=True,
+            initializer=tf.keras.initializers.Constant(corrected_initial_lambdas['mass']),
+            trainable=(initial_lambdas['mass'] != 0),
         )
         self.lambda_radiation_param = self.add_weight(
             name='lambda_radiation_param',
             shape=(),
-            initializer=tf.keras.initializers.Constant(initial_lambdas['radiation']),
-            trainable=True,
+            initializer=tf.keras.initializers.Constant(corrected_initial_lambdas['radiation']),
+            trainable=(initial_lambdas['radiation'] != 0),
         )
         self.lambda_humidity_param = self.add_weight(
             name='lambda_humidity_param',
             shape=(),
-            initializer=tf.keras.initializers.Constant(initial_lambdas['humidity']),
-            trainable=True,
+            initializer=tf.keras.initializers.Constant(corrected_initial_lambdas['humidity']),
+            trainable=(initial_lambdas['humidity'] != 0),
         )
         self.lambda_nonneg_param = self.add_weight(
             name='lambda_nonneg_param',
             shape=(),
-            initializer=tf.keras.initializers.Constant(initial_lambdas['nonneg']),
-            trainable=True,
+            initializer=tf.keras.initializers.Constant(corrected_initial_lambdas['nonneg']),
+            trainable=(initial_lambdas['nonneg'] != 0),
         )
 
     def call(self, inputs):
@@ -925,7 +976,6 @@ def main(lambda_energy,
     N_EPOCHS = n_epochs
     shuffle_buffer = 12 * 384  # ncol=384
 
-
     # append to results_{args.lambda_energy} to the output_results_dirpath
     output_results_dirpath = f"{output_results_dirpath}/results_{data_subset_fraction}"
 
@@ -939,14 +989,21 @@ def main(lambda_energy,
         "bab82a2ebdc750a0134ddcd0d5813867b92eed2a/train/"
     )
 
-    global vars_mlo, vars_mlo_0, vars_mli, vars_mlo_dims, vars_mli_dims, input_var_indices, output_var_indices, initial_loss_functions, lambdas_string_with_names, mlo_scale, mli_mean, mli_max, mli_min
+    global vars_mlo, vars_mlo_0, vars_mli, vars_mlo_dims, vars_mli_dims, input_var_indices, output_var_indices, initial_loss_functions, lambdas_string_with_names, mlo_scale, mli_mean, mli_max, mli_min, constant_lambdas
+    constant_lambdas = ["energy", "mass", "radiation", "humidity", "nonneg"]
 
     # Load normalization datasets
     mli_mean = xr.open_dataset(norm_path + 'inputs/input_mean.nc')
     mli_max = xr.open_dataset(norm_path + 'inputs/input_max.nc')
     mli_min = xr.open_dataset(norm_path + 'inputs/input_min.nc')
     mlo_scale = xr.open_dataset(norm_path + 'outputs/output_scale.nc')
-    
+
+    # get only the 59 index of the variables that have more than 1 level
+    mli_mean = mli_mean.isel(lev=59)
+    mli_max = mli_max.isel(lev=59)
+    mli_min = mli_min.isel(lev=59)
+    mlo_scale = mlo_scale.isel(lev=59)
+
     training_files = prepare_training_files(root_train_path)
     validation_files = prepare_validation_files(root_train_path)
 
@@ -1022,7 +1079,8 @@ def main(lambda_energy,
 
     # Define model
     base_model = build_model()
-
+    print(f"initial_lambdas: {initial_lambdas}")
+    # exit()
     model = CustomModel(base_model, initial_lambdas)
 
 
@@ -1059,6 +1117,7 @@ def main(lambda_energy,
     tds, 
     tds_val, 
     model_optimizer,
+    initial_lambdas,
     lambda_optimizer,
     N_EPOCHS, 
     steps_per_epoch, 
@@ -1155,3 +1214,6 @@ if __name__ == "__main__":
     )
 
 # python combined_loss_model.py --lambda_energy=0.1 --lambda_mass=0.1 --lambda_radiation=0.1 --lambda_humidity=0.1 --lambda_nonneg=0.1 --output_results_dirpath=/home/alvarovh/code/cse598_climate_proj/results_new/ --data_subset_fraction=0.01 --n_epochs=1
+
+#python combined_loss_model.py --lambda_energy=0.1 --lambda_mass=0.1 --lambda_radiation=0.1 --lambda_humidity=0.1 --lambda_nonneg=0.1 --output_results_dirpath=/nfs/turbo/coe-mihalcea/alvarovh/large_data/cse598_project/experimental_results/Nov24/trainable_lambdas --data_subset_fraction=0.1 --n_epochs=10
+
