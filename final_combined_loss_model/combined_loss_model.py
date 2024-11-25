@@ -651,7 +651,7 @@ def build_model():
 
 @keras.utils.register_keras_serializable()
 class CustomModel(tf.keras.Model):
-    def __init__(self, base_model, initial_lambdas):
+    def __init__(self, base_model, initial_lambdas, constant_lambdas=[], exclude_these_losses=[]):
         super(CustomModel, self).__init__()
         self.base_model = base_model
 
