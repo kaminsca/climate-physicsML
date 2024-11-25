@@ -505,6 +505,8 @@ def from_input_normalized_to_original(normalized, var, input_var_norm_epsilon = 
         original = normalized * (mli_max[var] - mli_min[var] + input_var_norm_epsilon) + mli_mean[var]
     except:
         print(f"ERROR Failed to get key {var}")
+        with open("failed_keys.txt", "a") as f:
+            f.write(f"Failed to get key {var}\n")
         
 
     return normalized * (mli_max[var] - mli_min[var] + input_var_norm_epsilon) + mli_mean[var]

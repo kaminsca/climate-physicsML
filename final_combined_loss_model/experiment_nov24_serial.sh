@@ -7,7 +7,7 @@
 # Set experiment parameters
 nov24_exp_dirpath="/nfs/turbo/coe-mihalcea/alvarovh/large_data/cse598_project/experimental_results/Nov24/initiallambdasscaled"
 data_fraction=0.01
-n_epochs=5
+n_epochs=1
 
 # Define additional training parameters
 relative_scale_lambda_mse=1.0  # Adjust as needed
@@ -22,39 +22,39 @@ declare -a experiments=(
   # Constant Lambdas all set to 1
   # "constant_radiation_sf1 mass_nonneg_radiation mass_nonneg 1 1 1 constant_radiation_sf1.log"
   "constant_nonneg_sf1 mass_nonneg_radiation mass_radiation 1 1 1 constant_nonneg_sf1.log"
-  "constant_mass_sf1 mass_nonneg_radiation radiation_nonneg 1 1 1 constant_mass_sf1.log"
+  # "constant_mass_sf1 mass_nonneg_radiation radiation_nonneg 1 1 1 constant_mass_sf1.log"
 
   # Radiation
-  "constant_radiation_sf0.05 mass_nonneg_radiation mass_nonneg 0.05 1 1 constant_radiation_sf0.05.log"
-  "constant_radiation_sf0.25 mass_nonneg_radiation mass_nonneg 0.25 1 1 constant_radiation_sf0.25.log"
-  "constant_radiation_sf0.5 mass_nonneg_radiation mass_nonneg 0.5 1 1 constant_radiation_sf0.5.log"
+  # "constant_radiation_sf0.05 mass_nonneg_radiation mass_nonneg 0.05 1 1 constant_radiation_sf0.05.log"
+  # "constant_radiation_sf0.25 mass_nonneg_radiation mass_nonneg 0.25 1 1 constant_radiation_sf0.25.log"
+  # "constant_radiation_sf0.5 mass_nonneg_radiation mass_nonneg 0.5 1 1 constant_radiation_sf0.5.log"
 
   # Mass
-  "constant_mass_sf0.05 mass_nonneg_radiation radiation_nonneg 1 0.05 1 constant_mass_sf0.05.log"
-  "constant_mass_sf0.25 mass_nonneg_radiation radiation_nonneg 1 0.25 1 constant_mass_sf0.25.log"
-  "constant_mass_sf0.5 mass_nonneg_radiation radiation_nonneg 1 0.5 1 constant_mass_sf0.5.log"
+  # "constant_mass_sf0.05 mass_nonneg_radiation radiation_nonneg 1 0.05 1 constant_mass_sf0.05.log"
+  # "constant_mass_sf0.25 mass_nonneg_radiation radiation_nonneg 1 0.25 1 constant_mass_sf0.25.log"
+  # "constant_mass_sf0.5 mass_nonneg_radiation radiation_nonneg 1 0.5 1 constant_mass_sf0.5.log"
 
   # Non-Negativity
-  "constant_nonneg_sf0.05 mass_nonneg_radiation mass_radiation 1 1 0.05 constant_nonneg_sf0.05.log"
-  "constant_nonneg_sf0.25 mass_nonneg_radiation mass_radiation 1 1 0.25 constant_nonneg_sf0.25.log"
-  "constant_nonneg_sf0.5 mass_nonneg_radiation mass_radiation 1 1 0.5 constant_nonneg_sf0.5.log"
+  # "constant_nonneg_sf0.05 mass_nonneg_radiation mass_radiation 1 1 0.05 constant_nonneg_sf0.05.log"
+  # "constant_nonneg_sf0.25 mass_nonneg_radiation mass_radiation 1 1 0.25 constant_nonneg_sf0.25.log"
+  # "constant_nonneg_sf0.5 mass_nonneg_radiation mass_radiation 1 1 0.5 constant_nonneg_sf0.5.log"
 
   # All models with constant lambdas of 1
-  "constant_lambdas_str mass_nonneg_radiation _ 1 1 1 constant_lambdas_str.log"
+  # "constant_lambdas_str mass_nonneg_radiation _ 1 1 1 constant_lambdas_str.log"
 
   #### Trainable Lambdas ####
 
   # Trainable Lambdas (we exclude and set constant the other two losses)
   
   # Radiation
-  "trainable_lambdas_radiation mass_nonneg mass_nonneg 1 1 1 trainable_lambdas_radiation.log"
+  # "trainable_lambdas_radiation mass_nonneg mass_nonneg 1 1 1 trainable_lambdas_radiation.log"
   # Mass
-  "trainable_lambdas_mass nonneg_radiation nonneg_radiation 1 1 1 trainable_lambdas_mass.log"
+  # "trainable_lambdas_mass nonneg_radiation nonneg_radiation 1 1 1 trainable_lambdas_mass.log"
   # Non-Negativity
-  "trainable_lambdas_nonneg mass_radiation mass_radiation 1 1 1 trainable_lambdas_nonneg.log"
+  # "trainable_lambdas_nonneg mass_radiation mass_radiation 1 1 1 trainable_lambdas_nonneg.log"
 
   # Train all lambdas
-  "train_all_lambdas _ _ 1 1 1 train_all_lambdas.log"
+  # "train_all_lambdas _ _ 1 1 1 train_all_lambdas.log"
 )
 # Explanation: "exp_name constant_lambdas_str exclude_these_losses_str relative_scale_lambda_radiation relative_scale_lambda_mass relative_scale_lambda_nonneg log_file"
 
