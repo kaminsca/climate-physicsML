@@ -62,7 +62,7 @@ def plot_contour_map(lat, lon, values, cmap='viridis', vmin=None, vmax=None, cle
     cbar.set_label('Value')
 
     # Add title
-    ax.set_title(title, fontsize=14)
+    # ax.set_title(title, fontsize=14)
 
     # Save or show the plot
     if save_path:
@@ -207,13 +207,29 @@ def plot_comparison(predictions, ground_truth, vars_mlo, output_dir):
         print(f"Saved comparison plot: {output_file}")
 
 
-def make_predictions_and_save_plots(input_model_path, figures_folder):
+def make_predictions_and_save_plots(input_model_path, figures_folder, input_file=None):
     with open("file_list.pkl", "rb") as f:
         all_files = pickle.load(f)
         print("Loaded file list from file_list.pkl.")
-
-    # Define paths
-    input_file = all_files[-1]  # Replace with your .mli file
+    if input_file is None:
+        # Define paths
+        input_file = all_files[-1]  # Replace with your .mli file
+        # print("Using input file: ", input_file)
+    else:
+        # try to find the basename in the list of file paths
+        found = False
+        for file in all_files:
+            if os.path.basename(file) == os.path.basename(input_file):
+                found = True
+                input_file = file
+                break
+        if not found:
+            raise ValueError("Input file not found in the list of files.")
+        
+        # return
+    file_identifier = os.path.basename(input_file)
+    print("using file: ", file_identifier)
+    print(os.path.basename(input_file))
     groundtruth_file = input_file.replace(".mli.", ".mlo.")  # Replace with your .mlo file
     norm_path = "/home/alvarovh/code/cse598_climate_proj/ClimSim/preprocessing/normalizations/"  # Replace with your normalization files path
     # Variables for input (mli) and output (mlo)
@@ -259,8 +275,15 @@ def make_predictions_and_save_plots(input_model_path, figures_folder):
     success_predictions_count = 0
     for i in range(0, len(vars_mlo)):
         try:
-            plot_contour_map(ds_grid['lat'], ds_grid['lon'], predictions[:,i], title=f'Predictions: {vars_mlo[i]}', save_path=f'{prediction_figures_dirpath}/predictions_{vars_mlo[i]}.png')
-            print(f"Plotted predictions for {vars_mlo[i]} in {prediction_figures_dirpath}/predictions_{vars_mlo[i]}.png")
+            if vars_mlo[i] == "state_t":
+                vmin = min_temp
+                vmax = max_temp
+            else:
+                vmin = None
+                vmax = None
+            output_path = f'{prediction_figures_dirpath}/predictions_{vars_mlo[i]}_fromfile_{file_identifier}.png'
+            plot_contour_map(ds_grid['lat'], ds_grid['lon'], predictions[:,i], title=f'Predictions: {vars_mlo[i]}', save_path=output_path, vmin=vmin, vmax=vmax)
+            print(f"Plotted predictions for {vars_mlo[i]} in {output_path}")
             success_predictions_count += 1
         except Exception as e:
             with open("error_log.txt", "a") as f:
@@ -271,9 +294,16 @@ def make_predictions_and_save_plots(input_model_path, figures_folder):
     success_groundtruth_count = 0
     for i in range(0, len(vars_mlo)):
         try:
+            if vars_mlo[i] == "state_t":
+                vmin = min_temp
+                vmax = max_temp
+            else:
+                vmin = None
+                vmax = None
             # plot_contour_map(ds_grid['lat'], ds_grid['lon'], predictions[:,i], title=f'Predictions: {vars_mlo[i]}', save_path=f'out_model_figures/predictions_{vars_mlo[i]}.png')
-            plot_contour_map(ds_grid['lat'], ds_grid['lon'], dso[:,i], title=f'Ground Truth: {vars_mlo[i]}', save_path=f'{groundtruth_figures_dirpath}/groundtruth_{vars_mlo[i]}.png')
-            print(f"Plotted ground truth for {vars_mlo[i]} in {groundtruth_figures_dirpath}/groundtruth_{vars_mlo[i]}.png")
+            output_path = f'{groundtruth_figures_dirpath}/groundtruth_{vars_mlo[i]}_fromfile_{file_identifier}.png'
+            plot_contour_map(ds_grid['lat'], ds_grid['lon'], dso[:,i], title=f'Ground Truth: {vars_mlo[i]}', save_path=output_path, vmin=vmin, vmax=vmax)
+            print(f"Plotted ground truth for {vars_mlo[i]} in {output_path}")
             success_groundtruth_count += 1
         except:
             with open("error_log.txt", "a") as f:
@@ -283,8 +313,15 @@ def make_predictions_and_save_plots(input_model_path, figures_folder):
     success_error_count = 0
     for i in range(0, len(vars_mlo)):
         try:
-            plot_contour_map(ds_grid['lat'], ds_grid['lon'], dso[:,i] - predictions[:,i], title=f'Error: {vars_mlo[i]}', save_path=f'{error_figures_dirpath}/error_{vars_mlo[i]}.png')
-            print(f"Plotted error for {vars_mlo[i]} in {error_figures_dirpath}/error_{vars_mlo[i]}.png")
+            if vars_mlo[i] == "state_t":
+                vmin = -40
+                vmax = 40
+            else:
+                vmin = None
+                vmax = None
+            output_path = f'{error_figures_dirpath}/error_{vars_mlo[i]}_fromfile_{file_identifier}.png'
+            plot_contour_map(ds_grid['lat'], ds_grid['lon'], dso[:,i] - predictions[:,i], title=f'Error: {vars_mlo[i]}', save_path=output_path, vmin=vmin, vmax=vmax)
+            print(f"Plotted error for {vars_mlo[i]} in {output_path}")
             success_error_count += 1
 
             # lets get the error of state_t
