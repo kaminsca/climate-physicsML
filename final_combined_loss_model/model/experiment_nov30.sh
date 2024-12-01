@@ -5,7 +5,7 @@
 # ================================
 
 # Set experiment parameters
-nov30_exp_dirpath="/nfs/turbo/coe-mihalcea/alvarovh/large_data/cse598_project/experimental_results/Nov30_2130"
+nov30_exp_dirpath="/nfs/turbo/coe-mihalcea/alvarovh/large_data/cse598_project/experimental_results/Nov30_2230"
 data_fraction=0.01
 n_epochs=1
 
