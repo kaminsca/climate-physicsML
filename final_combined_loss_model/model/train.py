@@ -27,8 +27,6 @@ random.seed(42)
 np.random.seed(42)
 tf.random.set_seed(42)
 
-
-
 DEBUG=False
 
 def compute_mass_loss(x, y_true, y_pred):
@@ -242,7 +240,8 @@ def train_model(model, dataset, val_dataset, model_optimizer, initial_lambdas, l
                 model_grads = tape.gradient(total_loss, model_variables)
                 # Compute gradients for lambda parameters
                 if lambda_variables:  # Check if there are trainable lambdas
-                    print(f"These are the trainable lambdas: {lambda_variables}")
+                    if DEBUG:
+                        print(f"These are the trainable lambdas: {lambda_variables}")
                     lambda_grads = tape.gradient(total_loss, lambda_variables)
                     lambda_optimizer.apply_gradients(zip(lambda_grads, lambda_variables))
                     # After computing gradients

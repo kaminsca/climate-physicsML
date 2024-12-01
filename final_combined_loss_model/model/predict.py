@@ -16,6 +16,7 @@ from preprocess_data import (
 )
 from config import vars_mli, vars_mlo, norm_path, test_subset_dirpath
 import argparse
+import xarray as xr
 
 def setup_gpu():
     physical_devices = tf.config.list_physical_devices('GPU')
@@ -29,7 +30,15 @@ def setup_gpu():
     else:
         print("No GPUs found. Using CPU.")
 
-def evaluate_model(model, dataset, steps, model_path, output_dir):
+def from_output_scaled_to_original(scaled, var_name, mlo_scale):
+    """
+    Rescale output variables back to their original scale.
+    """
+    if var_name in ["state_t", "state_q0001"]:
+        return scaled
+    return scaled / mlo_scale[var_name].values
+
+def evaluate_model(model, dataset, steps, output_dir, mlo_scale, model_id):
     # Metrics
     mae_metric = tf.keras.metrics.MeanAbsoluteError()
     mse_metric = tf.keras.metrics.MeanSquaredError()
@@ -40,10 +49,18 @@ def evaluate_model(model, dataset, steps, model_path, output_dir):
     total_samples = 0
     start_time = time.time()
 
+    # Lists to store predictions and true values
+    all_y_pred = []
+    all_y_true = []
+
     for step, (x_batch, y_batch) in enumerate(dataset):
         if step >= steps:
             break
         y_pred = model(x_batch, training=False)
+
+        # Append predictions and true values
+        all_y_pred.append(y_pred.numpy())
+        all_y_true.append(y_batch.numpy())
 
         # Update overall metrics
         mae_metric.update_state(y_batch, y_pred)
@@ -63,6 +80,23 @@ def evaluate_model(model, dataset, steps, model_path, output_dir):
             variable_mae[var_name] += var_mae_metric.result().numpy() * batch_size
             variable_mse[var_name] += var_mse_metric.result().numpy() * batch_size
 
+    # Concatenate all predictions and true values
+    all_y_pred = np.concatenate(all_y_pred, axis=0)
+    all_y_true = np.concatenate(all_y_true, axis=0)
+
+    # Rescale predictions and true values to original scale
+    y_pred_rescaled = np.zeros_like(all_y_pred)
+    y_true_rescaled = np.zeros_like(all_y_true)
+
+    for i, var_name in enumerate(vars_mlo):
+        y_pred_rescaled[:, i] = from_output_scaled_to_original(all_y_pred[:, i], var_name, mlo_scale)
+        y_true_rescaled[:, i] = from_output_scaled_to_original(all_y_true[:, i], var_name, mlo_scale)
+
+    # Save rescaled predictions and true values
+    predictions_file = os.path.join(output_dir, f'predictions_{model_id}.npz')
+    np.savez(predictions_file, y_pred=y_pred_rescaled, y_true=y_true_rescaled, variables=vars_mlo)
+    print(f"Rescaled predictions saved to {predictions_file}")
+
     # Calculate average metrics
     avg_mae = mae_metric.result().numpy()
     avg_mse = mse_metric.result().numpy()
@@ -75,22 +109,21 @@ def evaluate_model(model, dataset, steps, model_path, output_dir):
     print(f"Evaluation completed in {elapsed_time:.2f} seconds.")
     print(f"Average MAE: {avg_mae:.6f}")
     print(f"Average MSE: {avg_mse:.6f}")
+    # print state_t mse:
+    print(f"state_t MSE: {variable_mse['state_t']:.6f}")
 
     # Save metrics to a file
-    model_id = os.path.basename(model_path).replace('.keras', '')
-    metrics_file = os.path.join(output_dir, f'general_metrics_{model_id}.txt')
-    per_var_metrics_file = os.path.join(output_dir, f'per_variable_metrics_{model_id}.txt')
-
+    metrics_file = os.path.join(output_dir, f'metrics_{model_id}.csv')
     with open(metrics_file, 'w') as f:
-        f.write(f"mae,mse,model_basename\n")
-        f.write(f"{avg_mae:.6f},{avg_mse:.6f},{os.path.basename(model_path)}\n")    
-    with open(per_var_metrics_file, 'w') as f:
-        f.write(f"var_name,mae,mse,model_basename\n")
+        f.write("Variable,MAE,MSE\n")
         for var_name in vars_mlo:
-            f.write(f"{var_name},{variable_mae[var_name]:.6f},{variable_mse[var_name]:.6f},{os.path.basename(model_path)}\n")
+            f.write(f"{var_name},{variable_mae[var_name]:.6f},{variable_mse[var_name]:.6f}\n")
+        f.write(f"Average,{avg_mae:.6f},{avg_mse:.6f}\n")
+
     print(f"Metrics saved to {metrics_file}")
 
 def main(model_path, data_file=None, batch_size=32, output_dir='prediction_results'):
+    model_id = os.path.basename(model_path).replace('.keras', '').replace("best_model_lambdas_", "")
     setup_gpu()
 
     # Load the model
@@ -126,11 +159,11 @@ def main(model_path, data_file=None, batch_size=32, output_dir='prediction_resul
     # Ensure output directory exists
     os.makedirs(output_dir, exist_ok=True)
 
-    # Evaluate the model
-    evaluate_model(model, dataset, steps, model_path, output_dir)
+    # Evaluate the model and save predictions
+    evaluate_model(model, dataset, steps, output_dir, mlo_scale, model_id)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Evaluate the model.')
+    parser = argparse.ArgumentParser(description='Evaluate the model and save predictions.')
     parser.add_argument(
         '--model_path',
         type=str,
@@ -163,4 +196,14 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
         output_dir=args.output_dir
     )
+
+# python predict.py --model_path /nfs/turbo/coe-mihalcea/alvarovh/large_data/cse598_project/experimental_results/Nov30/massmodel/results_0.01/best_model_lambdas_excluded_radiation_excluded_nonneg_constant_radiation_constant_nonneg_scaledfactorofmse_1.00_scaledfactorofmass_1.00_scaledfactorofradiation_1.00_scaledfactorofnonneg_1.00_datafrac_0.01_epoch_1.keras --output_dir /nfs/turbo/coe-mihalcea/alvarovh/climsim/climsim_subset/datafraction_0.01/prediction_results
 # python predict.py --model_path /nfs/turbo/coe-mihalcea/alvarovh/large_data/cse598_project/experimental_results/Nov30/zeromodel/results_0.01/best_model_lambdas_excluded_mass_excluded_radiation_excluded_nonneg_constant_mass_constant_radiation_constant_nonneg_scaledfactorofmse_1.00_scaledfactorofmass_1.00_scaledfactorofradiation_1.00_scaledfactorofnonneg_1.00_datafrac_0.01_epoch_1.keras --output_dir /nfs/turbo/coe-mihalcea/alvarovh/climsim/climsim_subset/datafraction_0.01/prediction_results
+# MASS
+# Average MAE: 0.420916
+# Average MSE: 1.186408
+# state_t MSE: 14.396312
+
+# Average MAE: 0.321673
+# Average MSE: 0.605441
+# state_t MSE: 5.100840
