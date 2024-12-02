@@ -24,3 +24,4 @@ climsim_downloaded_data_dirpath = (
 )
 
 norm_path = f"{root_climsim_dirpath}/preprocessing/normalizations/"
+grid_path = f"{root_climsim_dirpath}/grid_info/ClimSim_low-res_grid-info.nc"

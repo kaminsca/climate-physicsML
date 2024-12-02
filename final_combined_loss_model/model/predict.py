@@ -15,9 +15,13 @@ from preprocess_data import (
     prepare_validation_files,
     load_normalization_data,
 )
-from config import vars_mli, vars_mlo, norm_path, test_subset_dirpath
+from config import vars_mli, vars_mlo, norm_path, test_subset_dirpath, grid_path
 import argparse
 import xarray as xr
+
+# seeds
+np.random.seed(42)
+tf.random.set_seed(42)
 
 def setup_gpu():
     physical_devices = tf.config.list_physical_devices('GPU')
@@ -38,8 +42,7 @@ def from_output_scaled_to_original(scaled, var_name, mlo_scale):
     if var_name in ["state_t", "state_q0001"]:
         return scaled
     return scaled / mlo_scale[var_name].values
-
-def evaluate_model(model, dataset, steps, output_dir, mlo_scale, model_id, test_or_val="test"):
+def evaluate_model(model, dataset, steps, output_dir, mlo_scale, model_id, test_or_val="test", file_basenames_to_save=None, lat_to_save=None, lon_to_save=None):
     if test_or_val == None:
         test_or_val = ""
     # Metrics
@@ -56,6 +59,15 @@ def evaluate_model(model, dataset, steps, output_dir, mlo_scale, model_id, test_
     all_y_pred = []
     all_y_true = []
 
+    # Initialize lists for per-batch metrics
+    per_batch_mae = []
+    per_batch_mse = []
+
+    # Initialize per-variable per-batch metrics file
+    per_batch_variable_metrics_file = os.path.join(output_dir, f'{test_or_val}per_variable_pbtchmet_{model_id}.csv')
+    f_per_var = open(per_batch_variable_metrics_file, 'w')
+    f_per_var.write('batch,variable_name,mae,mse\n')
+
     for step, (x_batch, y_batch) in enumerate(dataset):
         if step >= steps:
             break
@@ -69,19 +81,31 @@ def evaluate_model(model, dataset, steps, output_dir, mlo_scale, model_id, test_
         mae_metric.update_state(y_batch, y_pred)
         mse_metric.update_state(y_batch, y_pred)
 
+        # Compute batch MAE and MSE using TensorFlow operations
+        batch_mae = tf.reduce_mean(tf.abs(y_batch - y_pred)).numpy()
+        batch_mse = tf.reduce_mean(tf.square(y_batch - y_pred)).numpy()
+
+        per_batch_mae.append(batch_mae)
+        per_batch_mse.append(batch_mse)
+
         batch_size = x_batch.shape[0]
         total_samples += batch_size
 
-        # Per-variable metrics
+        # Compute per-variable metrics for the current batch
         for i, var_name in enumerate(vars_mlo):
-            var_mae_metric = tf.keras.metrics.MeanAbsoluteError()
-            var_mse_metric = tf.keras.metrics.MeanSquaredError()
+            # Compute per-variable MAE and MSE for the batch
+            var_mae = tf.reduce_mean(tf.abs(y_batch[:, i] - y_pred[:, i])).numpy()
+            var_mse = tf.reduce_mean(tf.square(y_batch[:, i] - y_pred[:, i])).numpy()
 
-            var_mae_metric.update_state(y_batch[:, i], y_pred[:, i])
-            var_mse_metric.update_state(y_batch[:, i], y_pred[:, i])
+            # Accumulate over all batches for overall metrics
+            variable_mae[var_name] += var_mae * batch_size
+            variable_mse[var_name] += var_mse * batch_size
 
-            variable_mae[var_name] += var_mae_metric.result().numpy() * batch_size
-            variable_mse[var_name] += var_mse_metric.result().numpy() * batch_size
+            # Write per-variable per-batch metrics to file
+            f_per_var.write(f"{step+1},{var_name},{var_mae:.6f},{var_mse:.6f}\n")
+
+    # Close the per-variable per-batch metrics file
+    f_per_var.close()
 
     # Concatenate all predictions and true values
     all_y_pred = np.concatenate(all_y_pred, axis=0)
@@ -97,12 +121,16 @@ def evaluate_model(model, dataset, steps, output_dir, mlo_scale, model_id, test_
 
     # Save rescaled predictions and true values
     predictions_file = os.path.join(output_dir, f'{test_or_val}preds_{model_id}.npz')
-    np.savez(predictions_file, y_pred=y_pred_rescaled, y_true=y_true_rescaled, variables=vars_mlo)
+    np.savez(predictions_file, y_pred=y_pred_rescaled, y_true=y_true_rescaled, variables=vars_mlo, file_basenames=file_basenames_to_save, latitudes=lat_to_save, longitudes=lon_to_save) 
     print(f"Rescaled predictions saved to {predictions_file}")
+    print(f"confirming the shape of the saved file: {y_pred_rescaled.shape}, {y_true_rescaled.shape}, {len(vars_mlo)}", len(file_basenames_to_save), len(lat_to_save), len(lon_to_save)) 
 
     # Calculate average metrics
     avg_mae = mae_metric.result().numpy()
     avg_mse = mse_metric.result().numpy()
+
+    global_mae = avg_mae
+    global_mse = avg_mse
 
     for var_name in vars_mlo:
         variable_mae[var_name] /= total_samples
@@ -112,18 +140,27 @@ def evaluate_model(model, dataset, steps, output_dir, mlo_scale, model_id, test_
     print(f"Evaluation completed in {elapsed_time:.2f} seconds.")
     print(f"Average MAE: {avg_mae:.6f}")
     print(f"Average MSE: {avg_mse:.6f}")
-    # print state_t mse:
+    # Print state_t mse:
     print(f"state_t MSE: {variable_mse['state_t']:.6f}")
 
     # Save metrics to a file
     metrics_file = os.path.join(output_dir, f'{test_or_val}met_{model_id}.csv')
     with open(metrics_file, 'w') as f:
-        f.write("Variable,MAE,MSE\n")
+        f.write("variable_name,mae,mse\n")
         for var_name in vars_mlo:
             f.write(f"{var_name},{variable_mae[var_name]:.6f},{variable_mse[var_name]:.6f}\n")
         f.write(f"Average,{avg_mae:.6f},{avg_mse:.6f}\n")
 
     print(f"Metrics saved to {metrics_file}")
+
+    # Save per-batch metrics to a file
+    per_batch_metrics_file = os.path.join(output_dir, f'{test_or_val}pbtchmet_{model_id}.csv')
+    with open(per_batch_metrics_file, 'w') as f:
+        f.write("batch,mae,mse\n")
+        for i, (mae, mse) in enumerate(zip(per_batch_mae, per_batch_mse)):
+            f.write(f"{i+1},{mae:.6f},{mse:.6f}\n")
+    print(f"Per-batch metrics saved to {per_batch_metrics_file}")
+
 
 def main(model_path, data_file=None, batch_size=32, output_dir='prediction_results', predict_validation=False):
     model_id = os.path.basename(model_path).replace('.keras', '').replace("best_model_lambdas_", "")
@@ -140,6 +177,11 @@ def main(model_path, data_file=None, batch_size=32, output_dir='prediction_resul
 
     # Load normalization parameters
     mli_mean, mli_max, mli_min, mlo_scale = load_normalization_data(norm_path)
+
+    # Load grid
+    ds_grid = xr.open_dataset(grid_path, engine='netcdf4')
+    latitudes = ds_grid['lat'].values.tolist()
+    longitudes = ds_grid['lon'].values.tolist()
 
     all_file_lists = []
     all_file_lists_setnames = []
@@ -171,6 +213,21 @@ def main(model_path, data_file=None, batch_size=32, output_dir='prediction_resul
             mli_max, mli_min, mlo_scale, shuffle_buffer, batch_size,
             shuffle=False  # No need to shuffle during evaluation
         )
+        # filenames to save
+        
+        # file_basenames_to_save = [[os.path.basename(f)] * 384 for f in file_list]
+        # # flatten in one list
+        # file_basenames_to_save = [item for sublist in file_basenames_to_save for item in sublist]
+        # To repeat the filename 384 for filename 1, then for 2, instead of those two steps we can:
+        file_basenames_to_save = [os.path.basename(f) for f in file_list for _ in range(384)]
+
+        lat_to_save = latitudes * len(file_list)
+        lon_to_save = longitudes * len(file_list)
+        # print(f"Shapes of file_basenames_to_save, lat_to_save, lon_to_save: {len(file_list)}, {len(latitudes)}, {len(longitudes)}")
+        # print(f"Lets inspect the first 10 elements of file_basenames_to_save: {file_basenames_to_save[:10]}")
+        # print(f"Lets inspect the 384-350 elements of file_basenames_to_save: {file_basenames_to_save[383:394]}")
+        # print(f'Lets inspect file_list: {file_list}')
+        # exit()
 
         # Calculate steps
         total_samples = calculate_dataset_size(file_list, vars_mli)
@@ -181,7 +238,7 @@ def main(model_path, data_file=None, batch_size=32, output_dir='prediction_resul
         os.makedirs(output_dir, exist_ok=True)
 
         # Evaluate the model and save predictions
-        evaluate_model(model, dataset, steps, output_dir, mlo_scale, model_id, test_or_val= setname)
+        evaluate_model(model, dataset, steps, output_dir, mlo_scale, model_id, test_or_val= setname, file_basenames_to_save=file_basenames_to_save, lat_to_save=lat_to_save, lon_to_save=lon_to_save)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Evaluate the model and save predictions.')
