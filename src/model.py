@@ -4,12 +4,9 @@ from config import vars_mli, vars_mlo
 
 def build_base_model():
     initializer = tf.keras.initializers.GlorotUniform()
-    # input_length = 2 * 60 + 5
+    # input_length = initially 2 * 60 + 5 for including atmospheric levels, now just length of input vars
     input_length = len(vars_mli)
-    # output_length_lin = 2 * 60 - 118
     output_length_relu = len(vars_mlo)
-    # output_length = output_length_lin + output_length_relu
-    # output_length =  output_length_lin + output_length_relu
     input_layer = keras.layers.Input(shape=(input_length,), name='input')
     hidden_0 = keras.layers.Dense(768, activation='relu', kernel_initializer=initializer)(input_layer)
     hidden_1 = keras.layers.Dense(640, activation='relu', kernel_initializer=initializer)(hidden_0)
@@ -21,7 +18,7 @@ def build_base_model():
 
     model = keras.Model(input_layer, output_relu, name='Emulator')
     model.summary()
-# print dimensions fo input and output layers of model and exit
+    # print dimensions of input and output layers of model and exit
     print("Model dimensions of input and output layers:")
     print(model.input.shape)
     print(model.output.shape)
@@ -37,8 +34,8 @@ class CustomModel(tf.keras.Model):
     def __init__(self, base_model, initial_lambdas, constant_lambdas, exclude_these_losses):
         super(CustomModel, self).__init__()
         self.base_model = base_model
-        self.constant_lambdas = constant_lambdas  # Store as instance attributes
-        self.exclude_these_losses = exclude_these_losses  # Store as instance attributes
+        self.constant_lambdas = constant_lambdas  
+        self.exclude_these_losses = exclude_these_losses
 
         # Initialize trainable lambda parameters
         self.lambda_mass_param = self.add_weight(
@@ -61,7 +58,6 @@ class CustomModel(tf.keras.Model):
         )
 
     def call(self, inputs):
-        # Pass inputs through the base model
         return self.base_model(inputs)
 
     def get_config(self):

@@ -18,7 +18,6 @@ def plot_contour_map(lat, lon, values, cmap='viridis', vmin=None, vmax=None, cle
     - title: Title of the plot.
     - save_path: Path to save the plot. If None, the plot is shown interactively.
     """
-    # Set up the plot
     lon = np.mod(lon + 180, 360) - 180  # Convert 0–360 to -180–180
 
     fig, ax = plt.subplots(
@@ -26,33 +25,26 @@ def plot_contour_map(lat, lon, values, cmap='viridis', vmin=None, vmax=None, cle
         figsize=(10, 5)
     )
     
-    # Set global map features
     ax.set_global()
     ax.coastlines()
     ax.gridlines(draw_labels=True)
 
-    # Handle colormap limits and contour levels
+    # handle colormap limits and contour levels
     vmin = vmin if vmin is not None else np.min(values)
     vmax = vmax if vmax is not None else np.max(values)
     clevels = np.linspace(vmin, vmax, clev)
 
-    # Plot the contour map
+    # plot contour map
     contour = ax.tricontourf(
         lon, lat, values, levels=clevels, cmap=cmap, transform=ccrs.PlateCarree()
-    ) #That showed a white space for some reason, lets try with contourf:
-    # contour = ax.contourf(
-    #     lon, lat, values, levels=clevels, cmap=cmap, transform=ccrs.PlateCarree()
-    # )
-
-    # Add colorbar
+    ) 
+    # add colorbar and title
     cbar = fig.colorbar(contour, ax=ax, orientation='vertical', shrink=0.5, pad=0.05)
     cbar.set_label('Value')
-
-    # Add title
     if title != '':
         ax.set_title(title, fontsize=14)
 
-    # Save or show the plot
+    # save or show the plot
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
     else:

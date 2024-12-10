@@ -67,40 +67,26 @@ def load_nc_dir_with_generator(
 ):
     def gen():
         for file in filelist:
-            # input read / preprocess #
             # read mli (-> ds)
-            # ds = xr.open_dataset(file, engine='netcdf4')
             with xr.open_dataset(file, engine='netcdf4') as ds:
                 with xr.open_dataset(file.replace('.mli.','.mlo.'), engine='netcdf4') as dso:
-                    # subset ozone, ch4, n2o
-
-                    # ds_utls = ds[vars_mli_utls]\
-                    #             .isel(lev=slice(5,21)).rename({'lev':'lev2'})
-                    # combine ds and ds_utls
                     ds = ds[vars_mli]
 
-                    # ds = ds.merge(ds_utls)
-                    
-                    # output read / preprocess #
-                    # read mlo (-> dso)
-                    # make mlo tendency variales ("ptend_xxxx"):
-                    # state_t_ds = ds['state_t']
-                    # state_q0001_ds = ds['state_q0001']
+                    # make mlo tendency variables ("ptend_xxxx"):
                     state_t_dso = dso['state_t']
                     state_q0001_dso = dso['state_q0001']
                     
                     for kvar in ['state_t','state_q0001','state_q0002', 'state_q0003', 'state_u', 'state_v']:
                         dso[kvar.replace('state','ptend')] = (dso[kvar] - ds[kvar])/1200 # timestep=1200[sec]
                     
-                    # normalizatoin, scaling #
-                    # ds = (ds-mli_mean)/(mli_max-mli_min)
+                    # normalization, scaling
                     input_var_norm_epsilon = 1e-5
                     ds = (ds - mli_mean) / (mli_max - mli_min + input_var_norm_epsilon)
                     
                     # print if this was indifined:
                     dso = dso * mlo_scale
 
-                    # get index 59 for variables that have more than 1 level
+                    # get index 59 (surface) for variables that have more than 1 level
                     index=59
                     for var in vars_mlo_0:
                         # print(var)
@@ -117,8 +103,6 @@ def load_nc_dir_with_generator(
                     min_temp = 174.55
                     max_temp = 329.85
 
-                    # Normalize the "ptend_t" variable in the dataset
-                    # dso["ptend_t"] = dso["ptend_t"] / (max_temp - min_temp)           # remove "state_xxxx"
                     dso = dso[vars_mlo]
 
                     for var in vars_mli:
@@ -128,18 +112,12 @@ def load_nc_dir_with_generator(
                             # print("changed")
                     ds=ds[vars_mli]
 
-                    # flatten input variables #
-                    #ds = ds.stack({'batch':{'sample','ncol'}})
+                    # flatten input variables to one array per grid location
                     ds = ds.stack({'batch':{'ncol'}})
                     ds = ds.to_stacked_array("mlvar", sample_dims=["batch"], name='mli')
-                    #dso = dso.stack({'batch':{'sample','ncol'}})
                     dso = dso.stack({'batch':{'ncol'}})
                     dso = dso.to_stacked_array("mlvar", sample_dims=["batch"], name='mlo')
 
-                    # Check dataset for NaNs
-                    # for x_batch, y_batch in zip(ds.values, dso.values):
-                    #     if tf.reduce_any(tf.math.is_nan(x_batch)) or tf.reduce_any(tf.math.is_nan(y_batch)):
-                    #         print("NaNs detected in dataset!")
                     denominator = (mli_max - mli_min + input_var_norm_epsilon)
                     for var in vars_mli:
                         if np.any(denominator[var] == 0):
@@ -151,18 +129,15 @@ def load_nc_dir_with_generator(
     return tf.data.Dataset.from_generator(
         gen,
         output_types=(tf.float32, tf.float32),
-        # output_shapes=((None, 125), (None, 128))
-        # output_shapes=((None,7),(None,12)) dynamically compute this
         output_shapes=((None, len(vars_mli)), (None, len(vars_mlo)))
     )
 
 def calculate_dataset_size(file_list, vars_mli):
-    # Load one representative file to determine sample size
+    # Load one file to determine sample size
     try:
         example_file = file_list[0]
-        # ds = xr.open_dataset(example_file, engine='netcdf4')
         with xr.open_dataset(example_file, engine='netcdf4') as ds:
-            samples_per_file = ds[vars_mli[0]].shape[0]  # Assuming all vars_mli have the same shape
+            samples_per_file = ds[vars_mli[0]].shape[0]
         print(f"Samples per file: {samples_per_file}")
     except Exception as e:
         print(f"Error loading file: {e}")
@@ -188,7 +163,7 @@ def load_file_list(path):
 def prepare_validation_files(data_subset_fraction=1.0):
     """
     Prepare validation files: every 10th sample for the first 5 days of each month 
-    for the following 2 years.
+    for the following 2 years after the training set.
     """
 
     if os.path.exists(validation_subset_dirpath):
@@ -199,10 +174,6 @@ def prepare_validation_files(data_subset_fraction=1.0):
         print(f"Validation files not found in {validation_subset_dirpath}. Generating new list...")
 
         file_list = load_file_list(climsim_downloaded_data_dirpath)
-        
-        # f_mli1 = glob.glob('/pscratch/sd/s/sungduk/hugging/E3SM-MMF_ne4/train/*/E3SM-MMF.mli.0007-0[23456789]-0[12345]-*.nc')
-        # f_mli2 = glob.glob('/pscratch/sd/s/sungduk/hugging/E3SM-MMF_ne4/train/*/E3SM-MMF.mli.0007-1[012]-0[12345]-*.nc')
-        # f_mli3 = glob.glob('/pscratch/sd/s/sungduk/hugging/E3SM-MMF_ne4/train/*/E3SM-MMF.mli.000[89]-*-0[12345]-*.nc')
         
         # Compile regex patterns for matching desired files
         pattern1 = re.compile(r'E3SM-MMF\.mli\.0007-0[23456789]-0[12345]-.*\.nc')
@@ -239,14 +210,6 @@ def prepare_validation_files(data_subset_fraction=1.0):
 
     print(f'[VAL] Total # of input files AFTER SUBSET OF {data_subset_fraction}: {len(validation_files)}')
     return validation_files
-    
-    # return validation_files
-    # training_files = training_files[:int(len(training_files) * data_subset_fraction)]
-    # validation_files = validation_files[:int(len(validation_files) * data_subset_fraction)]
-
-
-        # print(f'[TRAIN] Total # of input files: {len(training_files)}')
-    # print(f'[TRAIN] Total # of input files AFTER SUBSET OF {data_subset_fraction}: {len(training_files)}')
 
 def prepare_training_files(data_subset_fraction=1.0):
     """
@@ -260,11 +223,6 @@ def prepare_training_files(data_subset_fraction=1.0):
     else:
         file_list = load_file_list(climsim_downloaded_data_dirpath)
 
-        # Define regex patterns
-        # Match files for years 0001 to 0006, any month, and any day
-
-        # f_mli1 = glob.glob('/pscratch/sd/s/sungduk/hugging/E3SM-MMF_ne4/train/*/E3SM-MMF.mli.000[123456]-*-*-*.nc')
-        # f_mli2 = glob.glob('/pscratch/sd/s/sungduk/hugging/E3SM-MMF_ne4/train/*/E3SM-MMF.mli.0007-01-*-*.nc')
         pattern_f_mli1 = re.compile(r'.*/E3SM-MMF\.mli\.000[1-6]-*-*-.*\.nc$')
         # Match files for year 0007, month 01, and all days
         pattern_f_mli2 = re.compile(r'.*/E3SM-MMF\.mli\.0007-01-*-*.nc$')
@@ -310,7 +268,7 @@ def prepare_test_files(data_subset_fraction=1.0):
 
         file_list = load_file_list(climsim_downloaded_data_dirpath)
         
-        # Compile regex patterns for matching desired files
+        # regex patterns for matching desired files
         pattern = re.compile(r'E3SM-MMF\.mli\.0008-.*-01-00000\.nc')
         
         # Filter files matching the patterns
@@ -343,7 +301,7 @@ def load_normalization_data(norm_path):
     mli_min = xr.open_dataset(norm_path + 'inputs/input_min.nc')
     mlo_scale = xr.open_dataset(norm_path + 'outputs/output_scale.nc')
 
-    # get only the 59 index of the variables that have more than 1 level
+    # get only the 59 index (surface level) of the variables that have more than 1 level
     mli_mean = mli_mean.isel(lev=59)
     mli_max = mli_max.isel(lev=59)
     mli_min = mli_min.isel(lev=59)
