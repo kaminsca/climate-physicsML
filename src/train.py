@@ -51,6 +51,7 @@ def compute_mass_loss(x, y_true, y_pred):
     # Assume air density ρ = 1.225 kg/m³ and scale delta_q accordingly if needed
     loss_mass = tf.reduce_mean(tf.abs(delta_q - (E - P)))
     return loss_mass
+
 def compute_radiation_loss(x, y_true, y_pred):
     NETSW = y_pred[:, output_var_indices['cam_out_NETSW']]
     FLWDS = y_pred[:, output_var_indices['cam_out_FLWDS']]
@@ -87,7 +88,6 @@ def combined_loss(x, y_true, y_pred, loss_funcs):
             loss_value = loss_func(x, y_true, y_pred)
             total_loss += weight * loss_value
         loss_components[loss_name] = loss_value
-        # assert loss_value.shape == (), f"{loss_name} LOSS shape: {loss_value.shape}"
         # Check for NaNs and Infs
         # assert not tf.math.is_nan(loss_value), f"{loss_name} LOSS is nan"
         # assert not tf.math.is_inf(loss_value), f"{loss_name} LOSS is inf"
@@ -116,7 +116,6 @@ def compute_initial_loss_values(model, dataset, loss_functions, num_batches=5):
 
 
 def compute_nonneg_loss(x, y_true, y_pred):
-    # vars_to_check = ['state_q0001', 'cam_out_PRECC', 'cam_out_PRECSC', 'cam_out_NETSW', 'cam_out_FLWDS']
     vars_in_always_positive = ['cam_in_ALDIF', 'cam_in_ALDIR', 'cam_in_ASDIF', 'cam_in_ASDIR', 'cam_in_ICEFRAC', 'cam_in_LANDFRAC', 'cam_in_LWUP', 'cam_in_OCNFRAC', 'cam_in_SNOWHICE', 'cam_in_SNOWHLAND', 'pbuf_COSZRS', 'pbuf_SOLIN', 'state_pmid', 'state_ps', 'state_q0001', 'state_q0002', 'state_q0003', 'state_t', 'pbuf_CH4', 'pbuf_N2O', 'pbuf_ozone']
     vars_out_always_positive = ['cam_out_NETSW', 'cam_out_FLWDS', 'cam_out_PRECSC', 'cam_out_PRECC', 
                      'cam_out_SOLS', 'cam_out_SOLL', 'cam_out_SOLSD', 'cam_out_SOLLD',"state_t"]
@@ -188,8 +187,7 @@ def train_model(model, dataset, val_dataset, model_optimizer, initial_lambdas, l
         train_radiation_loss = 0.0
         train_nonneg_loss = 0.0
 
-
-        # Training loop with tqdm
+        # training loop
         with tqdm(total=steps_per_epoch, desc=f"Epoch {epoch+1} Training", unit="step") as pbar:
             for step, (x_batch_train, y_batch_train) in enumerate(dataset):
                 if step >= steps_per_epoch:
@@ -253,34 +251,33 @@ def train_model(model, dataset, val_dataset, model_optimizer, initial_lambdas, l
                 model_optimizer.apply_gradients(zip(model_grads, model_variables))
 
                 # Apply gradients to lambda parameters
-                # skip if no lambdas are trainableL
+                # skip if no lambdas are trainable
                 if lambda_variables:
                     lambda_optimizer.apply_gradients(zip(lambda_grads, lambda_variables))
                 del tape
 
                 for grad in grads:
                     if grad is not None:
+                        # handle NaNs
                         if tf.reduce_any(tf.math.is_nan(grad)):
                             print("NaN detected in gradients")
-                            # You can choose to handle NaNs here
                             with open("nan_gradients.txt", "a") as f:
                                 f.write(f"ERROR in epoch {epoch + 1}, step {step + 1}, lambdas: {lambdas_string_with_names}, datafrac: {data_subset_fraction}\n")
                             exit()
                     else:
-                        # Handle or log the None gradients if necessary
                         print("None gradient detected")
                         pass
                 if DEBUG:
                     print(f"Lambda Mass: {lambda_mass.numpy()}, Lambda Radiation: {lambda_radiation.numpy()}, Lambda Non-negativity: {lambda_nonneg.numpy()}")
 
-                # Access specific loss components if needed
+                # specific loss components
                 mass_loss_value = loss_components.get('mass', tf.constant(0.0)).numpy()
                 radiation_loss_value = loss_components.get('radiation', tf.constant(0.0)).numpy()
                 nonneg_loss_value = loss_components.get('nonneg', tf.constant(0.0)).numpy()
 
                 # PER VARIABLE METRICS ------------------------------------------------------------------------------------------------------
                 with open(train_batch_log_path, "a") as f:
-                    # Construct the line for CSV
+                    # make line for CSV
                     line = f"{epoch + 1},{step + 1},{total_loss.numpy()},{train_mae.result().numpy()},{train_mse.result().numpy()},{mass_loss_value},{radiation_loss_value},{nonneg_loss_value}," \
                         f"{lambda_mass.numpy()},{lambda_radiation.numpy()},{lambda_nonneg.numpy()}\n"
                     f.write(line)
@@ -289,15 +286,13 @@ def train_model(model, dataset, val_dataset, model_optimizer, initial_lambdas, l
                 variable_mse = {}
                 mae_metric = tf.keras.metrics.MeanAbsoluteError()
                 mse_metric = tf.keras.metrics.MeanSquaredError()
-                # Loop through each variable and compute its MAE and MSE
-                for i, var_name in enumerate(vars_mlo):  # Assuming the output corresponds to vars_mli
+                # go through each variable and compute MAE and MSE
+                for i, var_name in enumerate(vars_mlo): 
                     mae_metric = tf.keras.metrics.MeanAbsoluteError()
                     
-                    # Calculate MAE and MSE for the specific variable
+                    # MAE and MSE for the specific variable
                     mae_metric.update_state(y_batch_train[:, i], y_pred[:, i])
                     mse_metric.update_state(y_batch_train[:, i], y_pred[:, i])
-
-                    # Store the computed values
                     variable_mae[var_name] = mae_metric.result().numpy()
                     variable_mse[var_name] = mse_metric.result().numpy()
 
@@ -305,8 +300,7 @@ def train_model(model, dataset, val_dataset, model_optimizer, initial_lambdas, l
                     for var_name in vars_mlo:
                         f.write(f"{epoch + 1},{step + 1},{var_name},{variable_mae[var_name]:.6f},{variable_mse[var_name]:.6f}\n")
                 
-                # Accumulate epoch-level metrics
-                # Update epoch-level metrics
+                # Update epoch metrics
                 epoch_loss += total_loss.numpy()
                 train_mass_loss += mass_loss_value
                 train_radiation_loss += radiation_loss_value
@@ -320,14 +314,14 @@ def train_model(model, dataset, val_dataset, model_optimizer, initial_lambdas, l
                     "Loss": f"{total_loss.numpy():.4f}",
                     "MAE": f"{train_mae.result().numpy():.4f}",
                     "MSE": f"{train_mse.result().numpy():.4f}",
-                # lets monitor also one specific variable mse:
+                    # lets monitor also one specific variable mse:
                     "state_t_MSE": f"{variable_mse['state_t']:.4f}",
                     "cam_out_NETSW_MSE": f"{variable_mse['cam_out_NETSW']:.4f}",
                 })
                 pbar.update(1)
 
 
-        # Compute averages for the epoch
+        # averages for the epoch
         avg_epoch_loss = epoch_loss / step_count
         avg_epoch_mae = train_mae.result().numpy()
         avg_epoch_mse = train_mse.result().numpy()
@@ -344,7 +338,7 @@ def train_model(model, dataset, val_dataset, model_optimizer, initial_lambdas, l
         for loss_name, loss_value in loss_components.items():
             tf.summary.scalar(f'loss/{loss_name}', loss_value, step=epoch)
 
-        # Reset metrics for the next epoch
+        # reset metrics for the next epoch
         train_mae.reset_state()
         train_mse.reset_state()
 
@@ -365,24 +359,19 @@ def train_model(model, dataset, val_dataset, model_optimizer, initial_lambdas, l
                 y_val_pred = model(x_batch_val, training=False)
                 val_loss_value, loss_components = combined_loss(x_batch_val, y_batch_val, y_val_pred, loss_functions)
 
-                # Update overall metrics for the batch
                 val_mae.update_state(y_batch_val, y_val_pred)
                 val_mse.update_state(y_batch_val, y_val_pred)
 
-                # Initialize dictionaries to store per-variable MAE and MSE for validation
                 variable_val_mae = {}
                 variable_val_mse = {}
 
-                # Loop through each variable and compute its MAE and MSE
                 for i, var_name in enumerate(vars_mlo):  
                     val_mae_metric = tf.keras.metrics.MeanAbsoluteError()
                     val_mse_metric = tf.keras.metrics.MeanSquaredError()
 
-                    # Calculate MAE and MSE for the specific variable
                     val_mae_metric.update_state(y_batch_val[:, i], y_val_pred[:, i])
                     val_mse_metric.update_state(y_batch_val[:, i], y_val_pred[:, i])
 
-                    # Store the computed values
                     variable_val_mae[var_name] = val_mae_metric.result().numpy()
                     variable_val_mse[var_name] = val_mse_metric.result().numpy()
 
@@ -394,12 +383,10 @@ def train_model(model, dataset, val_dataset, model_optimizer, initial_lambdas, l
                     line = line[:-1] + "\n"
                     f.write(line)
                 
-                # Append per-variable metrics for validation
                 with open(val_variable_metrics_path, "a") as f:
                     for var_name in vars_mlo:
                         f.write(f"{epoch + 1},{step + 1},{var_name},{variable_val_mae[var_name]:.6f},{variable_val_mse[var_name]:.6f}\n")
 
-                # Accumulate validation metrics
                 val_loss += val_loss_value
                 val_mass_loss += loss_components.get('mass', tf.constant(0.0)).numpy()
                 val_radiation_loss += loss_components.get('radiation', tf.constant(0.0)).numpy()
@@ -407,7 +394,7 @@ def train_model(model, dataset, val_dataset, model_optimizer, initial_lambdas, l
                 val_step_count += 1
                 pbar.update(1)
 
-        # Calculate average validation metrics
+        # average validation metrics
         avg_val_loss = val_loss / val_step_count
         avg_val_mae = val_mae.result().numpy()
         avg_val_mse = val_mse.result().numpy()
@@ -422,7 +409,7 @@ def train_model(model, dataset, val_dataset, model_optimizer, initial_lambdas, l
                 f"Radiation Loss: {avg_val_radiation_loss:.4f}, "
                 f"Non-negativity Loss: {avg_val_nonneg_loss:.4f}")
         
-        # Early stopping logic based on MSE 
+        # early stopping logic based on MSE 
         if avg_val_mse < best_val_mse - min_delta:
             best_val_mse = avg_val_loss
             no_improvement_epochs = 0  # Reset counter
@@ -434,7 +421,7 @@ def train_model(model, dataset, val_dataset, model_optimizer, initial_lambdas, l
             no_improvement_epochs += 1
             print(f"No improvement in validation MSE for {no_improvement_epochs} epochs.")
 
-        # Stop training if no improvement exceeds patience
+        # Stop training if no improvement > patience
         if no_improvement_epochs >= patience:
             print(f"Early stopping triggered after {no_improvement_epochs} epochs with no improvement.")
             break
@@ -443,7 +430,6 @@ def setup_gpu():
     physical_devices = tf.config.list_physical_devices('GPU')
     if physical_devices:
         try:
-            # Enable memory growth for the GPU
             for gpu in physical_devices:
                 tf.config.experimental.set_memory_growth(gpu, True)
         except RuntimeError as e:
@@ -461,11 +447,7 @@ def main(constant_lambdas_str, exclude_these_losses_str, relative_scale_lambda_m
 
     output_results_dirpath = f"{output_results_dirpath}/results_{data_subset_fraction}"
 
-    # Set up GPU memory growth
     setup_gpu()
-
-    # Paths
-
 
     global input_var_indices, output_var_indices, initial_loss_functions, lambdas_string_with_names, mlo_scale, mli_mean, mli_max, mli_min, constant_lambdas, exclude_these_losses
 
@@ -483,12 +465,12 @@ def main(constant_lambdas_str, exclude_these_losses_str, relative_scale_lambda_m
     training_files = prepare_training_files(data_subset_fraction = data_subset_fraction)
     validation_files = prepare_validation_files(data_subset_fraction = data_subset_fraction)
 
-    # Load normalization parameters
+    # load normalization parameters
     mli_mean, mli_max, mli_min, mlo_scale = load_normalization_data(norm_path)
     input_var_indices = {name: idx for idx, name in enumerate(vars_mli)}
     output_var_indices = {name: idx for idx, name in enumerate(vars_mlo)}
 
-    # Create training and validation datasets
+    # create training and validation
     tds = create_dataset(
         training_files, vars_mli, vars_mlo, mli_mean,
         mli_max, mli_min, mlo_scale, shuffle_buffer, batch_size
@@ -498,7 +480,6 @@ def main(constant_lambdas_str, exclude_these_losses_str, relative_scale_lambda_m
         mli_max, mli_min, mlo_scale, shuffle_buffer, batch_size
     )
 
-    # Calculate dataset size
     total_training_samples = calculate_dataset_size(training_files, vars_mli)
     steps_per_epoch = math.ceil(total_training_samples / batch_size)
     print(f"Steps per epoch: {steps_per_epoch}")
@@ -511,7 +492,6 @@ def main(constant_lambdas_str, exclude_these_losses_str, relative_scale_lambda_m
     print(f"Validation steps: {validation_steps}")
     
     # Prepare lambdas -----------------------------------------------------------
-    # Compute initial loss values
     initial_loss_functions = {
         'mse': (mse_loss, 1.0),
         'mass': (compute_mass_loss, 0),
@@ -540,20 +520,17 @@ def main(constant_lambdas_str, exclude_these_losses_str, relative_scale_lambda_m
     initial_loss_values = compute_initial_loss_values(model_0, tds, initial_loss_functions, num_batches=100)
     print(f"INITIAL LOSS VALUES: {initial_loss_values}")
     
-    # Number of loss functions
     N = len(initial_loss_values) - len(exclude_these_losses)
 
-    # Compute constant c
-    epsilon = 1e-8  # To prevent division by zero
-    c = 100000.0 / N  # Total desired combined loss divided by number of loss functions
+    # Compute constant c for loss balancing
+    epsilon = 1e-8  # prevent division by zero
+    c = 100000.0 / N  # total desired combined loss divided by number of loss functions
 
     # Compute lambdas
     initial_lambdas = {}
     for loss_name, loss_value in initial_loss_values.items():
         initial_lambdas[loss_name] = relative_scale_lambda[loss_name] * (c / (loss_value + epsilon))  # Scale by relative scale factor
     print(f"INITIAL LAMBDAS SCALED: {initial_lambdas}")
-    
-    # Compute scaled losses to verify
     scaled_losses = {loss_name: initial_lambdas[loss_name] * loss_value for loss_name, loss_value in initial_loss_values.items()}
     total_scaled_loss = sum(scaled_losses.values())
 
@@ -579,13 +556,12 @@ def main(constant_lambdas_str, exclude_these_losses_str, relative_scale_lambda_m
     model = CustomModel(base_model, initial_lambdas, constant_lambdas=constant_lambdas, exclude_these_losses=exclude_these_losses)
     # ----
     # Set up optimizer ---------------------------------------------------------
-    # Optimizer for model weights
     model_optimizer = tf.keras.optimizers.Adam(learning_rate=0.001, clipvalue=1.0)
 
     # Optimizer for lambda parameters with a higher learning rate
     lambda_optimizer = tf.keras.optimizers.Adam(learning_rate=0.1, clipvalue=1.0)
 
-    # Ensure Log directory exists
+    # Ensure log directory exists
     os.makedirs(output_results_dirpath, exist_ok=True)
     lambdas_string_with_names = "_".join([f"excluded_{loss}" for loss in exclude_these_losses] + [f"constant_{loss}" for loss in constant_lambdas] + [f"scaledfactorof{loss}_{scale:.2f}" for loss, scale in relative_scale_lambda.items()])
 
