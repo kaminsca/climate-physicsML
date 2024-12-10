@@ -10,7 +10,7 @@ data_fraction=0.01
 n_epochs=1
 
 # Define additional training parameters
-relative_scale_lambda_mse=1.0  # Adjust as needed
+relative_scale_lambda_mse=1.0
 lr=0.001                        # Learning rate
 batch_size=32                   # Batch size
 
@@ -61,7 +61,7 @@ declare -a experiments=(
 # ================================
 # Command Logging Configuration
 # ================================
-
+# this is just for debugging purposes
 commands_file="commands.txt"
 
 # Clear the commands file if it exists
