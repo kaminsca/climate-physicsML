@@ -223,11 +223,6 @@ def main(model_path, data_file=None, batch_size=32, output_dir='prediction_resul
 
         lat_to_save = latitudes * len(file_list)
         lon_to_save = longitudes * len(file_list)
-        # print(f"Shapes of file_basenames_to_save, lat_to_save, lon_to_save: {len(file_list)}, {len(latitudes)}, {len(longitudes)}")
-        # print(f"Lets inspect the first 10 elements of file_basenames_to_save: {file_basenames_to_save[:10]}")
-        # print(f"Lets inspect the 384-350 elements of file_basenames_to_save: {file_basenames_to_save[383:394]}")
-        # print(f'Lets inspect file_list: {file_list}')
-        # exit()
 
         # Calculate steps
         total_samples = calculate_dataset_size(file_list, vars_mli)
@@ -280,24 +275,3 @@ if __name__ == "__main__":
         output_dir=args.output_dir,
         predict_validation=args.predict_validation
     )
-
-# MASS
-# python predict.py --predict_validation --model_path /nfs/turbo/coe-mihalcea/alvarovh/large_data/cse598_project/experimental_results/Nov30/massmodel/results_0.01/best_model_lambdas_excluded_radiation_excluded_nonneg_constant_radiation_constant_nonneg_scaledfactorofmse_1.00_scaledfactorofmass_1.00_scaledfactorofradiation_1.00_scaledfactorofnonneg_1.00_datafrac_0.01_epoch_1.keras --output_dir /nfs/turbo/coe-mihalcea/alvarovh/climsim/climsim_subset/datafraction_0.01/prediction_results
-# ZERO
-# python predict.py --predict_validation --model_path /nfs/turbo/coe-mihalcea/alvarovh/large_data/cse598_project/experimental_results/Nov30/zeromodel/results_0.01/best_model_lambdas_excluded_mass_excluded_radiation_excluded_nonneg_constant_mass_constant_radiation_constant_nonneg_scaledfactorofmse_1.00_scaledfactorofmass_1.00_scaledfactorofradiation_1.00_scaledfactorofnonneg_1.00_datafrac_0.01_epoch_1.keras --output_dir /nfs/turbo/coe-mihalcea/alvarovh/climsim/climsim_subset/datafraction_0.01/prediction_results
-
-# MASS
-# TEST
-# Average MAE: 0.420916
-# Average MSE: 1.186408
-# state_t MSE: 14.396312
-# VAL
-# Average MAE: 0.414890
-# Average MSE: 1.138606
-# state_t MSE: 13.453640
-
-
-
-# Average MAE: 0.321673
-# Average MSE: 0.605441
-# state_t MSE: 5.100840
